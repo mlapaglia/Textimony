@@ -323,6 +323,11 @@ function smsParserWorker(self, lib) {
     noteContact(k, address, a.contact_name, t);
 
     const rec = { t, o: box === 2 ? 1 : 0, m: 1, s: 0, k, ph: 0, gf: 0, vd: 0, au: 0, ot: 0, mb: 0 };
+    if (box === 1 && k.startsWith('g:')) {
+      // Who sent it: the "From" address, keyed like that person's 1-on-1 thread.
+      const from = m.addrs.find((ad) => ad.type === '137' && ad.address && ad.address !== 'insert-address-token');
+      if (from) rec.sk = normAddr(from.address);
+    }
     const parts = m.parts.slice().sort((x, y) => (+x.seq || 0) - (+y.seq || 0));
     const texts = [];
     for (const p of parts) {

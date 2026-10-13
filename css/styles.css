@@ -277,6 +277,37 @@ select { width: 100%; }
 .chart.cal { height: 210px; }
 
 .section-title { font-size: 20px; margin: 40px 0 0; }
+.dash-section > .grid { margin-top: 12px; }
+#sec-activity > .section-title { margin-top: 24px; }
+
+/* ------------------------------------------------------------------ leaderboard, lists, year in review */
+.table-wrap { overflow-x: auto; margin: 0 -4px; }
+table.leader { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+table.leader th, table.leader td { padding: 7px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--border); }
+table.leader th:first-child, table.leader td:first-child { text-align: left; white-space: normal; min-width: 160px; }
+table.leader th { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); cursor: pointer; user-select: none; position: sticky; top: 0; background: var(--surface); }
+table.leader th:hover { color: var(--text); }
+table.leader th.sorted { color: var(--text); }
+table.leader th.sorted::after { content: " ↓"; }
+table.leader th.sorted.asc::after { content: " ↑"; }
+table.leader tbody tr { cursor: pointer; }
+table.leader tbody tr:hover { background: var(--surface-2); }
+table.leader td.emoji { font-size: 16px; text-align: center; }
+table.leader .muted { color: var(--muted); }
+#leaderMore { margin-top: 10px; }
+
+.plain-list, .milestones { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; }
+.plain-list li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 2px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13.5px; }
+.plain-list li:hover { background: var(--surface-2); }
+.plain-list .meta, .milestones .meta { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.plain-list .empty, .milestones .empty { color: var(--muted); cursor: default; border: 0; }
+.milestones { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; max-height: 360px; }
+.milestones li { padding: 10px 12px; border-radius: 10px; background: var(--surface-2); font-size: 13.5px; }
+.milestones li b { display: block; font-size: 15px; margin-bottom: 2px; }
+
+.wrap-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.wrapped { display: flex; justify-content: center; padding: 8px 0; }
+.wrapped canvas { width: min(420px, 100%); height: auto; border-radius: 14px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.15); }
 
 /* ------------------------------------------------------------------ message browser */
 .browser { margin-top: 16px; }

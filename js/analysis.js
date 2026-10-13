@@ -5,6 +5,7 @@
  *   t  epoch ms      o  1 = sent, 0 = received      m  1 = MMS, 0 = SMS
  *   s  source: 0 = SMS Backup & Restore, 1 = Google Chat, 2 = WhatsApp, 3 = iMessage
  *   sn sender name (Google Chat: group messages you received; WhatsApp / iMessage: every message)
+ *   sk sender's 1-on-1 thread key (SMS group messages you received)
  *   k  thread key ('g:' prefix = group chat; Google Chat keys contain 'gc:', WhatsApp 'wa:', iMessage 'im:')
  *   b  text body                   l  length in characters
  *   wc word count    e  array of emoji or null      f  trait bit flags
@@ -22,6 +23,7 @@ const TRAITS = [
   { bit: 16, label: 'Reactions' },
 ];
 const T_REACTION = 16;
+const T_LINK = 2;
 
 const LEN_BINS = [
   [1, 4], [5, 9], [10, 19], [20, 29], [30, 49], [50, 74], [75, 99],
@@ -38,6 +40,19 @@ const REPLY_BINS = [
   { max: 24 * 3600e3, label: '8–24 h' },
 ];
 const CONVO_GAP = 6 * 3600e3; // silence that starts a new conversation
+
+// A "session" is a run of messages in one thread with no CONVO_GAP of silence.
+const SESSION_BINS = [
+  { max: 1, label: '1' },
+  { max: 5, label: '2–5' },
+  { max: 15, label: '6–15' },
+  { max: 50, label: '16–50' },
+  { max: 150, label: '51–150' },
+  { max: Infinity, label: '150+' },
+];
+const NIGHT_END_HOUR = 5; // "night owl" = messages from midnight until 5am
+const CONTACT_MILESTONES = new Set([1, 1000, 10000, 50000, 100000]);
+const TOTAL_MILESTONES = new Set([10000, 50000, 100000, 250000, 500000, 1000000]);
 
 const MEDIA_TYPES = [
   { key: 'ph', label: 'Photos' },
@@ -156,16 +171,82 @@ function aggregateMessages(msgs) {
     wordFreq: new Map(), // word -> [r, s]
     first: null,
     last: null,
+    // key -> { n:[r,s], first, last, starters:[r,s], replyMedian:[r,s], lenSum, lenN, emoji: Map, months: Map, longestRun }
+    byContact: new Map(),
+    night: new Map(), // mo -> [night, total]
+    latestNight: null, // { t, k, tod } latest time-of-night message
+    yearMonths: new Map(), // year -> [12 month counts]
+    replyByHour: [Array.from({ length: 24 }, () => []), Array.from({ length: 24 }, () => [])],
+    sourceMonths: new Map(), // mo -> [sms, google chat, whatsapp, imessage]
+    groupMonths: new Map(), // mo -> [1-on-1, group]
+    groupSenders: new Map(), // sender ('You', name, or SMS 1-on-1 key) -> messages in group chats
+    sessions: 0,
+    sessionHist: zeros(SESSION_BINS.length),
+    longestSession: null, // { k, start, end, n }
+    milestones: [], // { t, k (null = overall), n }
   };
-  const lastByThread = new Map();
+  const lastByThread = new Map(); // key -> open session { k, t, o, start, n }
   const tokenRe = /[\p{L}\p{N}']+/gu;
+  let total = 0;
+
+  const closeSession = (ss) => {
+    A.sessions++;
+    for (let i = 0; i < SESSION_BINS.length; i++) {
+      if (ss.n <= SESSION_BINS[i].max) { A.sessionHist[i]++; break; }
+    }
+    if (!A.longestSession || ss.n > A.longestSession.n) A.longestSession = { k: ss.k, start: ss.start, end: ss.t, n: ss.n };
+  };
 
   for (const r of msgs) {
     const o = r.o;
     A.dir[o]++;
     if (r.m) A.mms++;
     else A.sms++;
-    if (r.k.charCodeAt(0) === 103 /* g */ && r.k.startsWith('g:')) A.group++;
+    const isGroup = r.k.charCodeAt(0) === 103 /* g */ && r.k.startsWith('g:');
+    if (isGroup) A.group++;
+
+    let bc = A.byContact.get(r.k);
+    if (!bc) {
+      bc = { n: [0, 0], first: r.t, last: r.t, starters: [0, 0], replies: [[], []], lenSum: [0, 0], lenN: [0, 0], emoji: new Map(), months: new Map(), lastDay: null, run: 0, longestRun: 0 };
+      A.byContact.set(r.k, bc);
+    }
+    bc.n[o]++;
+    bc.last = r.t;
+    bc.months.set(r.mo, (bc.months.get(r.mo) || 0) + 1);
+    if (bc.lastDay !== r.d) {
+      bc.run = bc.lastDay === r.d - 1 ? bc.run + 1 : 1;
+      bc.lastDay = r.d;
+      if (bc.run > bc.longestRun) bc.longestRun = bc.run;
+    }
+    const cn = bc.n[0] + bc.n[1];
+    if (CONTACT_MILESTONES.has(cn)) A.milestones.push({ t: r.t, k: r.k, n: cn });
+    if (TOTAL_MILESTONES.has(++total)) A.milestones.push({ t: r.t, k: null, n: total });
+
+    let nm = A.night.get(r.mo);
+    if (!nm) A.night.set(r.mo, (nm = [0, 0]));
+    nm[1]++;
+    if (r.h < NIGHT_END_HOUR) {
+      nm[0]++;
+      const tod = r.h * 60 + new Date(r.t).getMinutes();
+      if (!A.latestNight || tod > A.latestNight.tod) A.latestNight = { t: r.t, k: r.k, tod };
+    }
+
+    const year = Math.floor(r.mo / 12);
+    let ym = A.yearMonths.get(year);
+    if (!ym) A.yearMonths.set(year, (ym = zeros(12)));
+    ym[r.mo % 12]++;
+
+    let sm = A.sourceMonths.get(r.mo);
+    if (!sm) A.sourceMonths.set(r.mo, (sm = [0, 0, 0, 0]));
+    sm[r.s || 0]++;
+
+    let gm = A.groupMonths.get(r.mo);
+    if (!gm) A.groupMonths.set(r.mo, (gm = [0, 0]));
+    gm[isGroup ? 1 : 0]++;
+    if (isGroup) {
+      const who = o ? 'You' : r.sn || r.sk;
+      if (who) A.groupSenders.set(who, (A.groupSenders.get(who) || 0) + 1);
+    }
 
     A.hour[o][r.h]++;
     A.dow[o][r.w]++;
@@ -190,6 +271,8 @@ function aggregateMessages(msgs) {
       }
       A.lenSum[o] += r.l;
       A.lenN[o]++;
+      bc.lenSum[o] += r.l;
+      bc.lenN[o]++;
       mon.len[o] += r.l;
       mon.lenN[o]++;
       A.words[o] += r.wc;
@@ -215,6 +298,7 @@ function aggregateMessages(msgs) {
         let ef = A.emojiFreq.get(em);
         if (!ef) A.emojiFreq.set(em, (ef = [0, 0]));
         ef[o]++;
+        bc.emoji.set(em, (bc.emoji.get(em) || 0) + 1);
       }
     }
 
@@ -228,21 +312,37 @@ function aggregateMessages(msgs) {
       A.mediaBytes += r.mb;
     }
 
-    // Reply times / conversation starters, per thread
+    // Reply times / conversation starters / sessions, per thread
     const prev = lastByThread.get(r.k);
     if (!prev || r.t - prev.t > CONVO_GAP) {
       A.starters[o]++;
-    } else if (prev.o !== o) {
+      bc.starters[o]++;
+      if (prev) closeSession(prev);
+      lastByThread.set(r.k, { k: r.k, t: r.t, o, start: r.t, n: 1 });
+      continue;
+    }
+    if (prev.o !== o) {
       const gap = r.t - prev.t;
       for (let i = 0; i < REPLY_BINS.length; i++) {
         if (gap < REPLY_BINS[i].max) { A.reply[o][i]++; break; }
       }
       A.replyTimes[o].push(gap);
+      bc.replies[o].push(gap);
+      A.replyByHour[o][r.h].push(gap);
     } else {
       A.doubleTexts[o]++;
     }
-    lastByThread.set(r.k, { t: r.t, o });
+    prev.t = r.t;
+    prev.o = o;
+    prev.n++;
   }
+  for (const ss of lastByThread.values()) closeSession(ss);
+  for (const bc of A.byContact.values()) {
+    bc.replyMedian = [median(bc.replies[0]), median(bc.replies[1])];
+    bc.replies = null;
+  }
+  A.replyHourMedian = A.replyByHour.map((hours) => hours.map(median));
+  A.replyByHour = null;
 
   if (msgs.length) {
     A.first = msgs[0].t;
@@ -277,6 +377,150 @@ function aggregateMessages(msgs) {
   A.replyMedian = [median(A.replyTimes[0]), median(A.replyTimes[1])];
   A.replyTimes = null; // free memory
   return A;
+}
+
+const TOKEN_RE = /[\p{L}\p{N}']+/gu;
+const NEGATORS = new Set(["not", "no", "never", "don't", "dont", "isn't", "isnt", "can't", "cant", "won't", "wont", "didn't", "didnt", "doesn't", "doesnt", "wasn't", "wasnt", "aren't", "arent", "nothing", "hardly"]);
+const URL_HOST_RE = /(?:https?:\/\/|\bwww\.)([^\s/?#:<>"')\]]+)/gi;
+const DOMAIN_ALIASES = { 'youtu.be': 'youtube.com', 'x.com': 'twitter.com', 'vm.tiktok.com': 'tiktok.com', 'instagr.am': 'instagram.com', 'amzn.to': 'amazon.com', 'a.co': 'amazon.com', 'goo.gl': 'google.com', 'maps.app.goo.gl': 'google.com' };
+
+/** Lowercased word tokens of a message body (curly apostrophes normalized). */
+function tokensOf(body) {
+  const m = body.toLowerCase().replace(/[‘’]/g, "'").match(TOKEN_RE);
+  if (!m) return [];
+  const out = [];
+  for (let tk of m) {
+    tk = tk.replace(/^'+|'+$/g, '');
+    if (tk.length >= 2 && !/^\d+$/.test(tk)) out.push(tk);
+  }
+  return out;
+}
+
+function domainOf(host) {
+  let h = host.toLowerCase().replace(/\.+$/, '');
+  if (DOMAIN_ALIASES[h]) return DOMAIN_ALIASES[h];
+  h = h.replace(/^(?:www\d?|m|mobile)\./, '');
+  return DOMAIN_ALIASES[h] || h;
+}
+
+/** Mood score of one message: lexicon words (flipped after a negator) plus emoji. */
+function moodOf(tokens, emoji) {
+  let score = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    let v = SENTIMENT.get(tokens[i]);
+    if (!v) continue;
+    if (NEGATORS.has(tokens[i - 1]) || (i > 1 && NEGATORS.has(tokens[i - 2]))) v = -v;
+    score += v;
+  }
+  if (emoji) for (const e of emoji) score += SENTIMENT.get(e.replace(/️/g, '')) || 0;
+  return score;
+}
+
+/**
+ * Second pass for the text-heavy views: emoji per month, shared link domains,
+ * vocabulary (unique words) per month and mood per month.
+ */
+function aggregateContent(msgs) {
+  const C = {
+    emojiMonths: new Map(), // mo -> Map(emoji -> n)
+    emojiTotals: new Map(), // emoji -> n
+    domains: new Map(), // domain -> [r, s]
+    vocab: new Map(), // mo -> [unique words received, unique words sent]
+    mood: new Map(), // mo -> { sum: [r, s], n: [r, s] }
+  };
+  const vocabSets = new Map();
+  for (const r of msgs) {
+    const o = r.o;
+    if (r.e) {
+      let em = C.emojiMonths.get(r.mo);
+      if (!em) C.emojiMonths.set(r.mo, (em = new Map()));
+      for (const e of r.e) {
+        em.set(e, (em.get(e) || 0) + 1);
+        C.emojiTotals.set(e, (C.emojiTotals.get(e) || 0) + 1);
+      }
+    }
+    if (!r.b || r.f & T_REACTION) continue;
+    if (r.f & T_LINK) {
+      for (const m of r.b.matchAll(URL_HOST_RE)) {
+        const d = domainOf(m[1]);
+        if (!d.includes('.')) continue;
+        let v = C.domains.get(d);
+        if (!v) C.domains.set(d, (v = [0, 0]));
+        v[o]++;
+      }
+    }
+    const tokens = tokensOf(r.b);
+    let vs = vocabSets.get(r.mo);
+    if (!vs) vocabSets.set(r.mo, (vs = [new Set(), new Set()]));
+    for (const tk of tokens) vs[o].add(tk);
+    let md = C.mood.get(r.mo);
+    if (!md) C.mood.set(r.mo, (md = { sum: [0, 0], n: [0, 0] }));
+    md.sum[o] += moodOf(tokens, r.e);
+    md.n[o]++;
+  }
+  for (const [mo, [rs, ss]] of vocabSets) C.vocab.set(mo, [rs.size, ss.size]);
+  return C;
+}
+
+/** Number of conversations each word appears in (document frequency for TF-IDF). */
+function buildDocFreq(msgs) {
+  const perThread = new Map();
+  for (const r of msgs) {
+    if (!r.b || r.f & T_REACTION) continue;
+    let set = perThread.get(r.k);
+    if (!set) perThread.set(r.k, (set = new Set()));
+    for (const tk of tokensOf(r.b)) set.add(tk);
+  }
+  const df = new Map();
+  for (const set of perThread.values()) for (const tk of set) df.set(tk, (df.get(tk) || 0) + 1);
+  return { df, docs: perThread.size };
+}
+
+/**
+ * Words that set one conversation apart: frequency here times log(conversations /
+ * conversations using the word). Filler words and words used fewer than 3 times are skipped.
+ */
+function distinctiveWords(msgs, { df, docs }, limit = 25) {
+  const tf = new Map();
+  for (const r of msgs) {
+    if (!r.b || r.f & T_REACTION) continue;
+    for (const tk of tokensOf(r.b)) {
+      if (tk.length < 3 || STOPWORDS.has(tk)) continue;
+      let v = tf.get(tk);
+      if (!v) tf.set(tk, (v = [0, 0]));
+      v[r.o]++;
+    }
+  }
+  const rows = [];
+  for (const [w, v] of tf) {
+    const n = v[0] + v[1];
+    if (n < 3) continue;
+    const idf = Math.log(docs / (df.get(w) || 1));
+    if (idf <= 0) continue;
+    rows.push({ w, r: v[0], s: v[1], score: n * idf });
+  }
+  return rows.sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+/** Total emoji uses in an emojiFreq map (pass to signatureEmoji when calling it in a loop). */
+function emojiTotal(emojiFreq) {
+  let all = 0;
+  for (const v of emojiFreq.values()) all += v[0] + v[1];
+  return all;
+}
+
+/** The emoji used far more in this conversation than overall (at least 3 uses). */
+function signatureEmoji(bc, emojiFreq, all = emojiTotal(emojiFreq)) {
+  let mine = 0;
+  for (const n of bc.emoji.values()) mine += n;
+  let best = null, bestScore = 0;
+  for (const [e, n] of bc.emoji) {
+    if (n < 3) continue;
+    const g = emojiFreq.get(e);
+    const score = n / mine / ((g[0] + g[1]) / all);
+    if (score > bestScore) { bestScore = score; best = e; }
+  }
+  return best;
 }
 
 function aggregateCalls(calls) {

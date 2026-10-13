@@ -12,6 +12,10 @@ const S = {
   // Your sender name per source whose exports don't mark it (WhatsApp, iMessage);
   // `auto` is false once picked by hand.
   owners: { 2: { name: '', auto: true }, 3: { name: '', auto: true } },
+  firstSeen: new Map(), // key -> time of the first message ever loaded for that conversation
+  docFreq: null, // { sig, value } cache for "What you talk about"
+  leader: { sort: 'n', asc: false, all: false }, // leaderboard sorting
+  wrapYear: null,
   gran: 'auto',
   activeGran: 'month',
   calYear: null,
@@ -135,6 +139,8 @@ async function loadFiles(fileList) {
 
   S.msgs.sort((a, b) => a.t - b.t);
   S.calls.sort((a, b) => a.t - b.t);
+  S.firstSeen = computeFirstSeen();
+  S.docFreq = null;
   for (const c of S.contacts.values()) c.label = contactLabel(c);
   for (const s of Object.keys(S.owners)) if (S.owners[s].auto) S.owners[s].name = guessOwner(+s);
   applyOwners();
@@ -332,8 +338,9 @@ function setContact(key) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function baseMessages() {
-  const { contact, groups, source } = S.filter;
+/** Messages matching the filters (not the date range); `contact` overrides the selected conversation. */
+function baseMessages(contact = S.filter.contact) {
+  const { groups, source } = S.filter;
   if (contact !== 'all') return S.msgs.filter((m) => m.k === contact);
   const people = S.peopleKeys;
   if (source === 'all' && groups && !people) return S.msgs;
@@ -460,9 +467,359 @@ function refresh({ timeline = true } = {}) {
   Charts.set('c-reply', anyReply ? replyOption(ui, A) : emptyOption(ui, 'No back-and-forth replies in this selection'));
   put('c-behavior', () => behaviorOption(ui, A));
 
+  // Activity
+  const all = S.filter.contact === 'all';
+  put('c-yoy', () => yearOverYearOption(ui, A));
+  put('c-night', () => nightOwlOption(ui, A));
+  const ln = A.latestNight;
+  $('#nightNote').textContent = ln
+    ? `Latest: ${new Date(ln.t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })} on ${new Date(ln.t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })} with ${labelFor(ln.k)}`
+    : 'Share of messages sent or received between midnight and 5am';
+
+  // People
+  show('#relCard', all);
+  if (all) put('c-relationships', () => relationshipsOption(ui, A, labelFor));
+  show('#leaderCard', all);
+  if (all) renderLeaderboard(A);
+  show('#driftCard', all);
+  if (all) renderDrifted(A);
+  $('#c-newpeople').closest('.card').hidden = !all;
+  if (all) {
+    const np = newPeopleRows(A);
+    Charts.set('c-newpeople', np.length ? newPeopleOption(ui, np) : emptyOption(ui, 'No new conversations in this range'));
+  }
+  renderMilestones(A);
+
+  // Group chats
+  const groupRows = [...A.groupSenders.entries()]
+    .map(([x, n]) => ({ label: senderLabel(x), n, you: x === 'You' }))
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 20);
+  show('#sec-groups', A.group > 0);
+  if (A.group > 0) {
+    Charts.set('c-groupsenders', groupRows.some((r) => !r.you) ? groupSendersOption(ui, groupRows) : emptyOption(ui, 'Senders are unknown for these group messages'));
+    put('c-groupshare', () => groupShareOption(ui, A));
+  }
+
+  // Replies & sessions
+  Charts.set('c-replyhour', anyReply ? replyByHourOption(ui, A) : emptyOption(ui, 'No back-and-forth replies in this selection'));
+  put('c-sessions', () => sessionsOption(ui, A));
+  const ls = A.longestSession;
+  $('#sessionNote').textContent = ls
+    ? `Longest: ${fmtNum(ls.n)} messages over ${fmtDuration(ls.end - ls.start)} with ${labelFor(ls.k)} on ${new Date(ls.start).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`
+    : 'A conversation ends after 6 hours of quiet';
+
+  // Content: the text-heavy pass only runs once the section is on (or near) the screen.
+  show('#distinctCard', !all);
+  lazyRender('#sec-content', () => {
+    if (!all) {
+      const rows = none ? [] : distinctiveWords(msgs, docFreqFor());
+      $('#distinctNote').textContent = `Words that set ${labelFor(S.filter.contact)} apart from your other conversations`;
+      Charts.set('c-distinct', rows.length ? distinctiveOption(ui, rows) : emptyOption(ui, 'Not enough words to compare yet'));
+    }
+    const C = aggregateContent(msgs);
+    Charts.set('c-emojitrend', C.emojiTotals.size ? emojiTrendOption(ui, C) : emptyOption(ui, 'No emoji in this selection'));
+    const dm = domainsOption(ui, C);
+    Charts.set('c-domains', dm.empty ? emptyOption(ui, 'No links in this selection') : dm.opt);
+    put('c-vocab', () => vocabOption(ui, C));
+    put('c-mood', () => moodOption(ui, C));
+  });
+
+  // Sources
+  const multi = all && S.filter.source === 'all' && [...A.sourceMonths.values()].reduce((set, v) => (v.forEach((n, i) => n && set.add(i)), set), new Set()).size > 1;
+  show('#sec-sources', multi);
+  if (multi) Charts.set('c-platforms', platformMixOption(ui, A, SOURCES));
+
+  show('#sec-wrapped', base.length > 0);
+  if (base.length) lazyRender('#sec-wrapped', () => renderWrapped(ui, base));
+
   renderCalls(ui);
   renderBrowser(msgs);
   wireCharts();
+}
+
+// ------------------------------------------------------------------ people, groups, content, year in review
+
+const show = (sel, on) => ($(sel).hidden = !on);
+const DAY_MS = 86400000;
+const ordinal = (n) => fmtNum(n) + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : { 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th');
+
+/** First-ever message time per conversation, over everything loaded. */
+function computeFirstSeen() {
+  const first = new Map();
+  for (const m of S.msgs) if (!first.has(m.k)) first.set(m.k, m.t);
+  return first;
+}
+
+/** A person's display name for a group sender: a name, a phone number, or an SMS 1-on-1 key. */
+function senderLabel(x) {
+  if (x === 'You') return 'You';
+  const own = S.contacts.get(x);
+  if (own) return own.name || formatAddr(own.addr) || x;
+  const digits = x.replace(/[^\d]/g, '');
+  if (digits.length >= 7 && /^[+\d\s().-]+$/.test(x)) {
+    const sms = S.contacts.get(digits.length > 8 ? digits.slice(-8) : digits);
+    if (sms && sms.name) return sms.name;
+  }
+  return formatAddr(x);
+}
+
+/** Document frequencies for "What you talk about", cached per filter combination. */
+function docFreqFor() {
+  const sig = `${S.filter.source}|${S.filter.groups}|${S.filter.people.join(',')}|${S.msgs.length}`;
+  if (!S.docFreq || S.docFreq.sig !== sig) S.docFreq = { sig, value: buildDocFreq(baseMessages('all')) };
+  return S.docFreq.value;
+}
+
+const LEADER_COLS = [
+  { key: 'label', title: 'Conversation', sort: (r) => r.label.toLowerCase(), fmt: (r) => escapeHtml(r.label) },
+  { key: 'n', title: 'Messages', sort: (r) => r.n, fmt: (r) => fmtNum(r.n) },
+  { key: 'sent', title: 'You sent', sort: (r) => r.sent, fmt: (r) => Math.round(r.sent * 100) + '%' },
+  { key: 'yourReply', title: 'Your reply', sort: (r) => r.yourReply ?? Infinity, fmt: (r) => fmtDuration(r.yourReply), asc: true },
+  { key: 'theirReply', title: 'Their reply', sort: (r) => r.theirReply ?? Infinity, fmt: (r) => fmtDuration(r.theirReply), asc: true },
+  { key: 'started', title: 'You start', sort: (r) => r.started ?? -1, fmt: (r) => (r.started == null ? '–' : Math.round(r.started * 100) + '%') },
+  { key: 'len', title: 'Avg length', sort: (r) => r.lenYou, fmt: (r) => `${r.lenYou} <span class="muted">/ ${r.lenThem}</span>` },
+  { key: 'streak', title: 'Streak', sort: (r) => r.streak, fmt: (r) => `${fmtNum(r.streak)}d` },
+  { key: 'sig', title: 'Signature', sort: (r) => r.sig || '', fmt: (r) => r.sig || '' , cls: 'emoji' },
+  { key: 'first', title: 'First', sort: (r) => r.first, fmt: (r) => new Date(r.first).toLocaleDateString(undefined, { year: 'numeric', month: 'short' }) },
+  { key: 'last', title: 'Last', sort: (r) => r.last, fmt: (r) => new Date(r.last).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) },
+];
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+function renderLeaderboard(A) {
+  const avg = (bc, o) => (bc.lenN[o] ? Math.round(bc.lenSum[o] / bc.lenN[o]) : 0);
+  const rows = [...A.byContact.entries()].map(([k, bc]) => {
+    const n = bc.n[0] + bc.n[1];
+    const st = bc.starters[0] + bc.starters[1];
+    return {
+      k, bc, n, label: labelFor(k), sent: bc.n[1] / n,
+      yourReply: bc.replyMedian[1], theirReply: bc.replyMedian[0],
+      started: st ? bc.starters[1] / st : null,
+      lenYou: avg(bc, 1), lenThem: avg(bc, 0), streak: bc.longestRun, first: bc.first, last: bc.last,
+    };
+  });
+  const col = LEADER_COLS.find((c) => c.key === S.leader.sort) || LEADER_COLS[1];
+  const dir = S.leader.asc ? 1 : -1;
+  rows.sort((a, b) => {
+    const x = col.sort(a), y = col.sort(b);
+    return (x < y ? -1 : x > y ? 1 : 0) * dir || b.n - a.n;
+  });
+  const shown = S.leader.all ? rows : rows.slice(0, 50);
+  const total = emojiTotal(A.emojiFreq);
+  for (const r of shown) r.sig = signatureEmoji(r.bc, A.emojiFreq, total);
+
+  const table = $('#leaderTable');
+  table.innerHTML = `<thead><tr>${LEADER_COLS.map((c) => `<th data-key="${c.key}" class="${c.key === col.key ? 'sorted' + (S.leader.asc ? ' asc' : '') : ''}">${c.title}</th>`).join('')}</tr></thead>` +
+    `<tbody>${shown.map((r) => `<tr data-key="${escapeHtml(r.k)}">${LEADER_COLS.map((c) => `<td class="${c.cls || ''}">${c.fmt(r)}</td>`).join('')}</tr>`).join('')}</tbody>`;
+  const more = $('#leaderMore');
+  more.hidden = rows.length <= 50;
+  more.textContent = S.leader.all ? 'Show top 50' : `Show all ${fmtNum(rows.length)}`;
+}
+
+function renderDrifted(A) {
+  const DAYS = 90;
+  const rows = [...A.byContact.entries()].map(([k, bc]) => ({ k, n: bc.n[0] + bc.n[1], last: bc.last })).sort((a, b) => b.n - a.n);
+  const cut = Math.max(20, rows.length ? rows[Math.floor((rows.length - 1) / 4)].n : 0); // top quartile, at least 20 messages
+  const quiet = rows.filter((r) => r.n >= cut && A.last - r.last > DAYS * DAY_MS).slice(0, 15);
+  const list = $('#driftList');
+  list.innerHTML = quiet.length
+    ? quiet.map((r) => {
+      const months = Math.round((A.last - r.last) / (30.4 * DAY_MS));
+      return `<li data-key="${escapeHtml(r.k)}"><span>${escapeHtml(labelFor(r.k))}</span><span class="meta">${fmtNum(r.n)} messages · last ${new Date(r.last).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })} (${months < 1 ? '<1' : months} mo before the end of this range)</span></li>`;
+    }).join('')
+    : '<li class="empty">Nobody you talked to a lot has gone quiet in this range.</li>';
+}
+
+function newPeopleRows(A) {
+  const byMonth = new Map();
+  for (const k of A.byContact.keys()) {
+    const t = S.firstSeen.get(k);
+    if (t == null || t < A.first) continue; // first message is before this range
+    const d = new Date(t);
+    const mo = d.getFullYear() * 12 + d.getMonth();
+    let row = byMonth.get(mo);
+    if (!row) byMonth.set(mo, (row = { mo, n: 0, names: [] }));
+    row.n++;
+    row.names.push(labelFor(k));
+  }
+  return [...byMonth.values()].sort((a, b) => a.mo - b.mo);
+}
+
+function renderMilestones(A) {
+  const top = new Set([...A.byContact.entries()].sort((a, b) => (b[1].n[0] + b[1].n[1]) - (a[1].n[0] + a[1].n[1])).slice(0, 10).map(([k]) => k));
+  const items = A.milestones
+    .filter((m) => m.k === null || top.has(m.k))
+    .sort((a, b) => b.t - a.t)
+    .slice(0, 40);
+  const date = (t) => new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+  $('#milestoneList').innerHTML = items.length
+    ? items.map((m) => {
+      const title = m.k === null ? `${ordinal(m.n)} message` : m.n === 1 ? `First message with ${labelFor(m.k)}` : `${ordinal(m.n)} message with ${labelFor(m.k)}`;
+      return `<li><b>${escapeHtml(title)}</b><span class="meta">${date(m.t)}</span></li>`;
+    }).join('')
+    : '<li class="empty">No milestones in this selection.</li>';
+}
+
+// ---- lazy sections: render expensive sections only when they're on (or near) the screen
+
+const Lazy = { pending: new Map(), visible: new Set(), observer: null };
+
+function lazyRender(sel, fn) {
+  Lazy.pending.set(sel, fn);
+  if (Lazy.visible.has(sel)) runLazy(sel);
+}
+
+function runLazy(sel) {
+  const fn = Lazy.pending.get(sel);
+  if (!fn) return;
+  Lazy.pending.delete(sel);
+  fn();
+}
+
+function observeLazySections() {
+  Lazy.observer = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      const sel = '#' + e.target.id;
+      if (e.isIntersecting) {
+        Lazy.visible.add(sel);
+        runLazy(sel);
+      } else {
+        Lazy.visible.delete(sel);
+      }
+    }
+  }, { rootMargin: '600px 0px' });
+  for (const sel of ['#sec-content', '#sec-wrapped']) Lazy.observer.observe($(sel));
+}
+
+// ---- year in review (canvas)
+
+function wrappedStats(base, year) {
+  const from = new Date(year, 0, 1).getTime();
+  const to = new Date(year + 1, 0, 1).getTime();
+  const msgs = base.filter((m) => m.t >= from && m.t < to);
+  const A = aggregateMessages(msgs);
+  const C = aggregateContent(msgs);
+  const people = [...A.byContact.entries()]
+    .map(([k, bc]) => ({ label: labelFor(k), n: bc.n[0] + bc.n[1] }))
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 5);
+  const emoji = [...A.emojiFreq.entries()].sort((a, b) => (b[1][0] + b[1][1]) - (a[1][0] + a[1][1])).slice(0, 3).map(([e]) => e);
+  const word = [...A.wordFreq.entries()].sort((a, b) => (b[1][0] + b[1][1]) - (a[1][0] + a[1][1]))[0];
+  const site = [...C.domains.entries()].sort((a, b) => (b[1][0] + b[1][1]) - (a[1][0] + a[1][1]))[0];
+  let night = 0;
+  for (const [n] of A.night.values()) night += n;
+  let newPeople = 0;
+  for (const k of A.byContact.keys()) {
+    const t = S.firstSeen.get(k);
+    if (t >= from && t < to) newPeople++;
+  }
+  return { year, A, people, emoji, word: word && word[0], site: site && site[0], nightPct: A.n ? (night / A.n) * 100 : 0, newPeople };
+}
+
+function drawWrapped(canvas, W, ui) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const sans = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  const emojiFont = '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+  const g = ctx.createLinearGradient(0, 0, w, h);
+  g.addColorStop(0, '#13213f');
+  g.addColorStop(0.55, '#2b1d52');
+  g.addColorStop(1, '#4a1942');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  const fit = (text, max) => {
+    let t = String(text);
+    if (ctx.measureText(t).width <= max) return t;
+    while (t.length > 1 && ctx.measureText(t + '…').width > max) t = t.slice(0, -1);
+    return t + '…';
+  };
+  const text = (str, x, y, size, { weight = 400, color = '#ffffff', align = 'left', max = w - 160, font = sans } = {}) => {
+    ctx.font = `${weight} ${size}px ${font}`;
+    ctx.fillStyle = color;
+    ctx.textAlign = align;
+    ctx.fillText(fit(str, max), x, y);
+  };
+  const soft = 'rgba(255,255,255,0.68)';
+  const A = W.A;
+
+  text(String(W.year), 80, 150, 120, { weight: 800 });
+  text('in messages', 80, 205, 40, { color: soft });
+  text(fmtNum(A.n), 80, 340, 110, { weight: 800, color: ui.series[3] });
+  text(`messages · ${fmtNum(A.dir[1])} sent, ${fmtNum(A.dir[0])} received`, 80, 395, 32, { color: soft });
+
+  // Top people with bars
+  text('Your people', 80, 490, 34, { weight: 700 });
+  const maxN = W.people[0] ? W.people[0].n : 1;
+  W.people.forEach((p, i) => {
+    const y = 535 + i * 62;
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.beginPath();
+    ctx.roundRect(80, y, 560, 46, 10);
+    ctx.fill();
+    ctx.fillStyle = ui.series[i % ui.series.length];
+    ctx.beginPath();
+    ctx.roundRect(80, y, Math.max(46, (560 * p.n) / maxN), 46, 10);
+    ctx.fill();
+    text(p.label, 98, y + 32, 26, { weight: 600, max: 420 });
+    text(fmtNum(p.n), 660, y + 32, 26, { color: soft, max: 200 });
+  });
+  if (!W.people.length) text('No messages this year', 80, 570, 28, { color: soft });
+
+  // Top emoji
+  text('Top emoji', 80, 900, 34, { weight: 700 });
+  text(W.emoji.join('  ') || '—', 80, 985, 72, { font: emojiFont });
+
+  // Stat tiles
+  const tiles = [
+    ['Busiest day', A.busiestDay ? `${fmtNum(A.busiestDay.n)} msgs` : '–', A.busiestDay ? new Date(dayToTs(A.busiestDay.d)).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''],
+    ['Night owl', `${W.nightPct.toFixed(1)}%`, 'after midnight'],
+    ['Longest chat', A.longestSession ? `${fmtNum(A.longestSession.n)} msgs` : '–', A.longestSession ? labelFor(A.longestSession.k) : ''],
+    ['Longest streak', A.longestStreak.len ? `${fmtNum(A.longestStreak.len)} days` : '–', 'in a row'],
+    ['Top word', W.word || '–', 'most used'],
+    ['New people', fmtNum(W.newPeople), W.site ? `top site: ${W.site}` : 'first messages'],
+  ];
+  tiles.forEach(([label, value, sub], i) => {
+    const col = i % 3, row = Math.floor(i / 3);
+    const x = 80 + col * 315, y = 1030 + row * 135;
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.beginPath();
+    ctx.roundRect(x, y, 290, 118, 14);
+    ctx.fill();
+    text(label.toUpperCase(), x + 20, y + 34, 19, { weight: 600, color: soft, max: 250 });
+    text(value, x + 20, y + 76, 34, { weight: 800, max: 250 });
+    text(sub, x + 20, y + 104, 19, { color: soft, max: 250 });
+  });
+  text('Textimony', w - 80, h - 24, 22, { weight: 600, color: 'rgba(255,255,255,0.45)', align: 'right' });
+}
+
+function renderWrapped(ui, base) {
+  const firstY = new Date(base[0].t).getFullYear();
+  const lastY = new Date(base[base.length - 1].t).getFullYear();
+  if (S.wrapYear == null || S.wrapYear < firstY || S.wrapYear > lastY) S.wrapYear = lastY;
+  const wrap = $('#wrapYears');
+  wrap.innerHTML = '';
+  for (let y = firstY; y <= lastY; y++) {
+    const b = document.createElement('button');
+    b.textContent = y;
+    b.className = y === S.wrapYear ? 'on' : '';
+    b.onclick = () => { S.wrapYear = y; renderWrapped(S.ui, baseMessages()); };
+    wrap.appendChild(b);
+  }
+  drawWrapped($('#wrapCanvas'), wrappedStats(base, S.wrapYear), ui);
+}
+
+function saveWrapped() {
+  $('#wrapCanvas').toBlob((blob) => {
+    if (!blob) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `textimony-${S.wrapYear}.png`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }, 'image/png');
 }
 
 function renderScope(n) {
@@ -558,6 +915,8 @@ function renderKpis(A) {
   const media = (o) => MEDIA_TYPES.reduce((s, m) => s + A.media[m.key][o], 0);
   const convos = A.contacts.size;
   const groups = [...A.contacts.keys()].filter((k) => k.startsWith('g:')).length;
+  let nightCount = 0;
+  for (const [n] of A.night.values()) nightCount += n;
   const tiles = [
     kpi('Messages', fmtNum(total), `${fmtNum(A.dir[1])} sent · ${fmtNum(A.dir[0])} received`),
     kpi('You sent', pct(A.dir[1], total), `of all messages`),
@@ -571,6 +930,8 @@ function renderKpis(A) {
     kpi('Words', fmtNum(A.words[0] + A.words[1]), `${fmtNum(A.words[1])} sent · ${fmtNum(A.words[0])} received`),
     kpi('Emoji', fmtNum(A.emoji[0] + A.emoji[1]), `in ${pct(A.emojiMsgs[0] + A.emojiMsgs[1], total)} of messages`),
     kpi('Attachments', fmtNum(media(0) + media(1)), `${fmtNum(A.media.ph[0] + A.media.ph[1])} photos · ${fmtNum(A.media.vd[0] + A.media.vd[1])} videos · ${fmtBytes(A.mediaBytes)}`),
+    kpi('Night owl', pct(nightCount, total), A.latestNight ? `latest ${new Date(A.latestNight.t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : 'no messages after midnight', 'Messages between midnight and 5am'),
+    kpi('Longest conversation', A.longestSession ? `${fmtNum(A.longestSession.n)} <small>msgs</small>` : '–', A.longestSession ? `${escapeHtml(labelFor(A.longestSession.k))} · ${new Date(A.longestSession.start).toLocaleDateString()}` : '', 'Most messages without a 6-hour break'),
   ];
   $('#kpis').innerHTML = tiles.join('');
 }
@@ -638,7 +999,7 @@ function renderBrowser(msgs) {
     row.className = 'msg ' + (m.o ? 'sent' : 'recv');
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    const sender = !m.o && m.k.startsWith('g:') ? formatAddr(m.sn) : '';
+    const sender = !m.o && m.k.startsWith('g:') && (m.sn || m.sk) ? senderLabel(m.sn || m.sk) : '';
     if (showWho && (S.filter.contact === 'all' || sender)) {
       const who = document.createElement('div');
       who.className = 'who';
@@ -750,6 +1111,30 @@ function init() {
     clearTimeout(S.peopleTimer);
     S.peopleTimer = setTimeout(() => setPeople(e.target.value), 200);
   };
+
+  $('#leaderTable').onclick = (e) => {
+    const th = e.target.closest('th');
+    if (th) {
+      const key = th.dataset.key;
+      const col = LEADER_COLS.find((c) => c.key === key);
+      if (S.leader.sort === key) S.leader.asc = !S.leader.asc;
+      else S.leader = { ...S.leader, sort: key, asc: !!col.asc };
+      refresh({ timeline: false });
+      return;
+    }
+    const tr = e.target.closest('tbody tr');
+    if (tr) setContact(tr.dataset.key);
+  };
+  $('#leaderMore').onclick = () => {
+    S.leader.all = !S.leader.all;
+    refresh({ timeline: false });
+  };
+  $('#driftList').onclick = (e) => {
+    const li = e.target.closest('li[data-key]');
+    if (li) setContact(li.dataset.key);
+  };
+  $('#wrapSave').onclick = saveWrapped;
+  observeLazySections();
 
   $('#search').oninput = (e) => {
     clearTimeout(S.searchTimer);

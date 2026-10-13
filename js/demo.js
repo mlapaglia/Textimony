@@ -86,7 +86,7 @@ function buildDemoFiles() {
   const callsOut = [];
   const end = new Date();
   end.setHours(0, 0, 0, 0);
-  const startT = end.getTime() - 2.5 * 365 * 86400000;
+  const startT = end.getTime() - Math.round(2.5 * 365) * 86400000; // whole days, so each "day" starts at midnight
   const DAY = 86400000;
 
   function smsXml(c, t, sent, body) {

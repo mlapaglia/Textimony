@@ -497,7 +497,7 @@ function lengthTrendOption(ui, A) {
   });
   const opt = baseOption(ui, { boxZoom: true });
   opt.xAxis = { type: 'time', axisLine: { lineStyle: { color: ui.axis } }, axisTick: { show: false }, axisLabel: { color: ui.muted, fontSize: 11, hideOverlap: true }, splitLine: { show: false } };
-  opt.yAxis = valAxis(ui, { name: 'avg characters', nameTextStyle: { color: ui.muted, fontSize: 11, align: 'left' } });
+  opt.yAxis = valAxis(ui);
   opt.tooltip = tooltipBase(ui, 'axis', 'line');
   opt.tooltip.formatter = (ps) => {
     const d = new Date(ps[0].value[0]).toLocaleDateString(undefined, { year: 'numeric', month: 'long' });
@@ -647,4 +647,262 @@ function callContactsOption(ui, rows) {
   };
   opt.series = [bar('Talk time', rows.map((x) => x.talk), ui.series[0], ui, { horizontal: true })];
   return opt;
+}
+
+// ------------------------------------------------------------------ people, rhythm, content, sources
+
+const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const EMOJI_FONT = '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+
+function timeAxis(ui) {
+  return { type: 'time', axisLine: { lineStyle: { color: ui.axis } }, axisTick: { show: false }, axisLabel: { color: ui.muted, fontSize: 11, hideOverlap: true }, splitLine: { show: false } };
+}
+
+const monthName = (ts) => new Date(ts).toLocaleDateString(undefined, { year: 'numeric', month: 'long' });
+
+/** Stacked monthly bars: `series` = [{ name, color, get(mo) }] over sorted month keys. */
+function monthlyStackOption(ui, months, series, { percent = false } = {}) {
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = timeAxis(ui);
+  opt.yAxis = valAxis(ui, percent ? { max: 100, axisLabel: { color: ui.muted, fontSize: 11, formatter: '{value}%' } } : {});
+  opt.tooltip = tooltipBase(ui, 'axis', 'shadow');
+  opt.tooltip.formatter = (ps) => {
+    ps.forEach((p) => (p.axisValueLabel = monthName(p.value[0])));
+    return stackTooltip(ps.filter((p) => p.value[1]).map((p) => (percent ? { ...p, value: [p.value[0], p.value[2]] } : p)));
+  };
+  const totals = months.map((mo) => series.reduce((s, x) => s + x.get(mo), 0) || 1);
+  opt.series = series.map((x, i) => ({
+    ...bar(x.name, months.map((mo, j) => {
+      const v = x.get(mo);
+      return percent ? [monthToTs(mo), Math.round((v / totals[j]) * 1000) / 10, v] : [monthToTs(mo), v];
+    }), x.color, ui, { stack: 'm', rounded: i === series.length - 1 }),
+    barMaxWidth: 18,
+  }));
+  opt.dataZoom = [insideZoom({ xAxisIndex: 0 })];
+  return opt;
+}
+
+function yearOverYearOption(ui, A) {
+  const years = [...A.yearMonths.keys()].sort((a, b) => a - b).slice(-8);
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = catAxis(ui, MONTH_LABELS, { boundaryGap: false });
+  opt.yAxis = valAxis(ui);
+  opt.tooltip = tooltipBase(ui, 'axis', 'line');
+  opt.tooltip.formatter = (ps) => {
+    let html = `<div style="font-weight:600;margin-bottom:4px">${ps[0].axisValueLabel}</div>`;
+    for (const p of [...ps].reverse()) {
+      const total = A.yearMonths.get(+p.seriesName).reduce((a, b) => a + b, 0);
+      html += `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(p.color)}${p.seriesName}</span><span><b>${p.value == null ? '–' : fmtNum(p.value)}</b> <span style="color:#888">· ${fmtNum(total)} in year</span></span></div>`;
+    }
+    return html;
+  };
+  opt.series = years.map((y, i) => {
+    const latest = i === years.length - 1;
+    const color = ui.series[(years.length - 1 - i) % ui.series.length];
+    // Months with no messages before the first / after the last message stay empty.
+    const data = A.yearMonths.get(y).map((v, m) => (v || (A.first <= new Date(y, m + 1, 1).getTime() && A.last >= new Date(y, m, 1).getTime()) ? v : null));
+    return line(String(y), data, color, { showSymbol: true, symbolSize: latest ? 7 : 5, lineStyle: { width: latest ? 3 : 1.5, color, opacity: latest ? 1 : 0.75 } });
+  });
+  return opt;
+}
+
+function nightOwlOption(ui, A) {
+  const keys = [...A.night.keys()].sort((a, b) => a - b);
+  const data = keys.map((mo) => {
+    const [n, tot] = A.night.get(mo);
+    return [monthToTs(mo), tot ? Math.round((n / tot) * 1000) / 10 : null, n, tot];
+  });
+  const opt = baseOption(ui, { boxZoom: true });
+  delete opt.legend;
+  opt.grid.top = 28;
+  opt.xAxis = timeAxis(ui);
+  opt.yAxis = valAxis(ui, { min: 0, axisLabel: { color: ui.muted, fontSize: 11, formatter: '{value}%' } });
+  opt.tooltip = tooltipBase(ui, 'axis', 'line');
+  opt.tooltip.formatter = (ps) => {
+    const v = ps[0].value;
+    return `<b>${monthName(v[0])}</b><br><b>${v[1]}%</b> after midnight · ${fmtNum(v[2])} of ${fmtNum(v[3])} messages`;
+  };
+  opt.series = [line('After midnight', data, ui.series[3], { showSymbol: data.length < 40, areaStyle: { color: ui.series[3], opacity: 0.1 } })];
+  opt.dataZoom = [insideZoom({ xAxisIndex: 0 })];
+  return opt;
+}
+
+function sessionsOption(ui, A) {
+  const opt = baseOption(ui, { boxZoom: true });
+  delete opt.legend;
+  opt.grid.top = 28;
+  opt.grid.bottom = 18;
+  opt.xAxis = catAxis(ui, SESSION_BINS.map((b) => b.label), { name: 'messages per conversation', nameLocation: 'middle', nameGap: 26, nameTextStyle: { color: ui.muted, fontSize: 11 } });
+  opt.yAxis = valAxis(ui);
+  opt.tooltip.formatter = (ps) => `<b>${ps[0].axisValueLabel} messages</b><br>${fmtNum(ps[0].value)} conversations`;
+  opt.series = [bar('Conversations', A.sessionHist, ui.series[2], ui)];
+  return opt;
+}
+
+/** Top conversations' monthly volume, stacked, plus everyone else as "Other". */
+function relationshipsOption(ui, A, labelFor, top = 8) {
+  const ranked = [...A.byContact.entries()].sort((a, b) => (b[1].n[0] + b[1].n[1]) - (a[1].n[0] + a[1].n[1]));
+  const head = ranked.slice(0, top);
+  const months = [...A.months.keys()].sort((a, b) => a - b);
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.legend.type = 'scroll';
+  opt.legend.right = 90;
+  opt.xAxis = timeAxis(ui);
+  opt.yAxis = valAxis(ui);
+  opt.tooltip = tooltipBase(ui, 'axis', 'line');
+  opt.tooltip.formatter = (ps) => {
+    ps.forEach((p) => (p.axisValueLabel = monthName(p.value[0])));
+    return stackTooltip(ps.filter((p) => p.value[1]).sort((a, b) => b.value[1] - a.value[1]));
+  };
+  const area = (name, get, color) => ({
+    ...line(name, months.map((mo) => [monthToTs(mo), get(mo)]), color, { stack: 'people', smooth: 0.3, lineStyle: { width: 1, color } }),
+    areaStyle: { color, opacity: 0.55 },
+  });
+  opt.series = head.map(([k, bc], i) => area(truncate(labelFor(k), 22), (mo) => bc.months.get(mo) || 0, ui.series[i % ui.series.length]));
+  if (ranked.length > top) {
+    opt.series.push(area('Other', (mo) => {
+      const tot = A.months.get(mo).c;
+      return tot[0] + tot[1] - head.reduce((s, [, bc]) => s + (bc.months.get(mo) || 0), 0);
+    }, ui.axis));
+  }
+  opt.dataZoom = [insideZoom({ xAxisIndex: 0 })];
+  return opt;
+}
+
+function newPeopleOption(ui, rows) {
+  // rows: [{ mo, n, names: [] }] sorted by month
+  const opt = baseOption(ui, { boxZoom: true });
+  delete opt.legend;
+  opt.grid.top = 28;
+  opt.xAxis = timeAxis(ui);
+  opt.yAxis = valAxis(ui, { minInterval: 1 });
+  opt.tooltip = tooltipBase(ui, 'axis', 'shadow');
+  opt.tooltip.formatter = (ps) => {
+    const r = rows[ps[0].dataIndex];
+    const names = r.names.slice(0, 8).map((n) => `<div>${n}</div>`).join('');
+    return `<b>${monthName(ps[0].value[0])}</b><br>${fmtNum(r.n)} new conversation${r.n === 1 ? '' : 's'}${names ? `<div style="color:#888;margin-top:4px">${names}${r.names.length > 8 ? '…' : ''}</div>` : ''}`;
+  };
+  opt.series = [{ ...bar('New conversations', rows.map((r) => [monthToTs(r.mo), r.n]), ui.series[4], ui), barMaxWidth: 14 }];
+  opt.dataZoom = [insideZoom({ xAxisIndex: 0 })];
+  return opt;
+}
+
+function groupSendersOption(ui, rows) {
+  // rows: [{ label, n, you }] sorted desc
+  const opt = baseOption(ui);
+  delete opt.legend;
+  opt.grid.top = 28;
+  opt.yAxis = catAxis(ui, rows.map((r) => truncate(r.label, 24)), { inverse: true });
+  opt.xAxis = valAxis(ui);
+  opt.tooltip.formatter = (ps) => `<b>${rows[ps[0].dataIndex].label}</b><br>${fmtNum(ps[0].value)} messages in group chats`;
+  opt.series = [{
+    ...bar('Messages', rows.map((r) => ({ value: r.n, itemStyle: { color: r.you ? ui.sent : ui.recv } })), ui.recv, ui, { horizontal: true }),
+    barMaxWidth: 16,
+  }];
+  return opt;
+}
+
+function groupShareOption(ui, A) {
+  const months = [...A.groupMonths.keys()].sort((a, b) => a - b);
+  return monthlyStackOption(ui, months, [
+    { name: '1-on-1', color: ui.series[0], get: (mo) => A.groupMonths.get(mo)[0] },
+    { name: 'Group chats', color: ui.series[2], get: (mo) => A.groupMonths.get(mo)[1] },
+  ], { percent: true });
+}
+
+function replyByHourOption(ui, A) {
+  const mins = (arr) => arr.map((v) => (v == null ? null : Math.round(v / 6000) / 10));
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = catAxis(ui, HOUR_LABELS, { boundaryGap: false });
+  opt.yAxis = valAxis(ui, { axisLabel: { color: ui.muted, fontSize: 11, formatter: (v) => `${v}m` } });
+  opt.tooltip = tooltipBase(ui, 'axis', 'line');
+  opt.tooltip.formatter = (ps) => {
+    let html = `<div style="font-weight:600;margin-bottom:4px">Replies sent at ${ps[0].axisValueLabel}</div>`;
+    for (const p of ps) html += `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(p.color)}${p.seriesName}</span><b>${p.value == null ? '–' : fmtDuration(p.value * 60000)}</b></div>`;
+    return html;
+  };
+  opt.series = [
+    line('You', mins(A.replyHourMedian[1]), ui.sent, { showSymbol: true, symbolSize: 5, connectNulls: true }),
+    line('Them', mins(A.replyHourMedian[0]), ui.recv, { showSymbol: true, symbolSize: 5, connectNulls: true }),
+  ];
+  return opt;
+}
+
+function distinctiveOption(ui, rows) {
+  const opt = sentRecvStack(ui, rows.map((r) => r.w), rows.map((r) => r.s), rows.map((r) => r.r), { horizontal: true });
+  return opt;
+}
+
+function emojiTrendOption(ui, C, top = 8) {
+  const emojis = [...C.emojiTotals.entries()].sort((a, b) => b[1] - a[1]).slice(0, top).map(([e]) => e);
+  const months = [...C.emojiMonths.keys()].sort((a, b) => a - b);
+  const opt = monthlyStackOption(ui, months, emojis.map((e, i) => ({ name: e, color: ui.series[i % ui.series.length], get: (mo) => C.emojiMonths.get(mo).get(e) || 0 })));
+  opt.legend.textStyle = { ...opt.legend.textStyle, fontSize: 15, fontFamily: EMOJI_FONT };
+  return opt;
+}
+
+function domainsOption(ui, C, limit = 15) {
+  const rows = [...C.domains.entries()]
+    .map(([d, v]) => ({ d, r: v[0], s: v[1], t: v[0] + v[1] }))
+    .sort((a, b) => b.t - a.t)
+    .slice(0, limit);
+  return { opt: sentRecvStack(ui, rows.map((x) => x.d), rows.map((x) => x.s), rows.map((x) => x.r), { horizontal: true }), empty: !rows.length };
+}
+
+function vocabOption(ui, C) {
+  const keys = [...C.vocab.keys()].sort((a, b) => a - b);
+  const mk = (o) => keys.map((mo) => [monthToTs(mo), C.vocab.get(mo)[o] || null]);
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = timeAxis(ui);
+  opt.yAxis = valAxis(ui);
+  opt.tooltip = tooltipBase(ui, 'axis', 'line');
+  opt.tooltip.formatter = (ps) => {
+    let html = `<div style="font-weight:600;margin-bottom:4px">${monthName(ps[0].value[0])}</div>`;
+    for (const p of ps) html += `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(p.color)}${p.seriesName}</span><b>${p.value[1] == null ? '–' : fmtNum(p.value[1])} words</b></div>`;
+    return html;
+  };
+  opt.series = [line('You', mk(1), ui.sent, { connectNulls: true }), line('Them', mk(0), ui.recv, { connectNulls: true })];
+  opt.dataZoom = [insideZoom({ xAxisIndex: 0 })];
+  return opt;
+}
+
+function moodOption(ui, C) {
+  const keys = [...C.mood.keys()].sort((a, b) => a - b);
+  // 3-month moving average of the per-message score, weighted by message count.
+  const mk = (o) => keys.map((mo, i) => {
+    let sum = 0, n = 0;
+    for (let j = Math.max(0, i - 2); j <= i; j++) {
+      const m = C.mood.get(keys[j]);
+      sum += m.sum[o];
+      n += m.n[o];
+    }
+    return [monthToTs(mo), n ? Math.round((sum / n) * 1000) / 1000 : null];
+  });
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = timeAxis(ui);
+  opt.yAxis = valAxis(ui);
+  opt.tooltip = tooltipBase(ui, 'axis', 'line');
+  opt.tooltip.formatter = (ps) => {
+    let html = `<div style="font-weight:600;margin-bottom:4px">${monthName(ps[0].value[0])} <span style="color:#888;font-weight:400">(3-month average)</span></div>`;
+    for (const p of ps) {
+      const v = p.value[1];
+      html += `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(p.color)}${p.seriesName}</span><b>${v == null ? '–' : (v > 0 ? '+' : '') + v.toFixed(2)}</b></div>`;
+    }
+    return html;
+  };
+  opt.series = [
+    line('You', mk(1), ui.sent, {
+      connectNulls: true,
+      markLine: { silent: true, symbol: 'none', lineStyle: { color: ui.muted, type: 'dashed', width: 1 }, label: { color: ui.muted, formatter: 'neutral', position: 'insideEndTop', fontSize: 11 }, data: [{ yAxis: 0 }] },
+    }),
+    line('Them', mk(0), ui.recv, { connectNulls: true }),
+  ];
+  opt.dataZoom = [insideZoom({ xAxisIndex: 0 })];
+  return opt;
+}
+
+function platformMixOption(ui, A, names) {
+  const months = [...A.sourceMonths.keys()].sort((a, b) => a - b);
+  const present = [0, 1, 2, 3].filter((s) => months.some((mo) => A.sourceMonths.get(mo)[s]));
+  return monthlyStackOption(ui, months, present.map((s) => ({ name: names[s], color: ui.series[s], get: (mo) => A.sourceMonths.get(mo)[s] })));
 }

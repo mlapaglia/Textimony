@@ -78,7 +78,9 @@
 
     <section class="kpis" id="kpis" aria-label="Summary"></section>
 
-    <section class="grid">
+    <section class="dash-section" id="sec-activity">
+      <h2 class="section-title">Activity</h2>
+      <div class="grid">
       <article class="card wide">
         <header>
           <div>
@@ -94,22 +96,18 @@
         </header>
         <div class="chart tall" id="c-timeline"></div>
       </article>
-
       <article class="card">
         <header><div><h2>Hour of day</h2><p class="sub">Which hours you text the most</p></div></header>
         <div class="chart" id="c-hour"></div>
       </article>
-
       <article class="card">
         <header><div><h2>Day of week</h2><p class="sub">Which days are the busiest</p></div></header>
         <div class="chart" id="c-dow"></div>
       </article>
-
       <article class="card wide">
         <header><div><h2>Weekly rhythm</h2><p class="sub">Messages by weekday and hour</p></div></header>
         <div class="chart" id="c-heat"></div>
       </article>
-
       <article class="card wide">
         <header>
           <div><h2>Daily activity calendar</h2><p class="sub">Each square is one day</p></div>
@@ -117,61 +115,163 @@
         </header>
         <div class="chart cal" id="c-calendar"></div>
       </article>
-
       <article class="card">
-        <header><div><h2>Sent vs received</h2><p class="sub">Overall split</p></div></header>
-        <div class="chart" id="c-split"></div>
+        <header><div><h2>Year over year</h2><p class="sub">Messages per month, one line per year</p></div></header>
+        <div class="chart" id="c-yoy"></div>
       </article>
-
       <article class="card">
-        <header><div><h2>Who's carrying the conversation</h2><p class="sub">Share of messages you sent, per month</p></div></header>
-        <div class="chart" id="c-share"></div>
+        <header><div><h2>Night owl</h2><p class="sub" id="nightNote">Share of messages sent or received between midnight and 5am</p></div></header>
+        <div class="chart" id="c-night"></div>
       </article>
+      </div>
+    </section>
 
-      <article class="card">
-        <header><div><h2>Message length</h2><p class="sub">Share of messages by length (reactions excluded)</p></div></header>
-        <div class="chart" id="c-length"></div>
-      </article>
-
-      <article class="card">
-        <header><div><h2>Average length over time</h2><p class="sub">Characters per message, by month</p></div></header>
-        <div class="chart" id="c-length-trend"></div>
-      </article>
-
+    <section class="dash-section" id="sec-people">
+      <h2 class="section-title">People</h2>
+      <div class="grid">
       <article class="card">
         <header><div><h2>Top conversations</h2><p class="sub" id="contactsNote"></p></div></header>
         <div class="chart tall" id="c-contacts"></div>
       </article>
-
-      <article class="card">
-        <header><div><h2>Top emoji</h2><p class="sub">Most-used emoji, sent and received</p></div></header>
-        <div class="chart tall" id="c-emoji"></div>
+      <article class="card" id="relCard">
+        <header><div><h2>Relationships over time</h2><p class="sub">Messages per month with your top conversations</p></div></header>
+        <div class="chart" id="c-relationships"></div>
       </article>
-
-      <article class="card">
-        <header><div><h2>Pictures, videos &amp; attachments</h2><p class="sub">Attachments by type</p></div></header>
-        <div class="chart" id="c-media"></div>
+      <article class="card wide" id="leaderCard">
+        <header><div><h2>Conversation leaderboard</h2><p class="sub">Click a column to sort, or a row to focus that conversation</p></div></header>
+        <div class="table-wrap"><table class="leader" id="leaderTable"></table></div>
+        <button class="btn small more" id="leaderMore" hidden>Show all</button>
       </article>
-
-      <article class="card">
-        <header><div><h2>Attachments over time</h2><p class="sub">Per month, by type</p></div></header>
-        <div class="chart" id="c-media-trend"></div>
+      <article class="card" id="driftCard">
+        <header><div><h2>Drifted apart</h2><p class="sub">People you used to talk to a lot, quiet for 90+ days</p></div></header>
+        <ol class="plain-list" id="driftList"></ol>
       </article>
+      <article class="card">
+        <header><div><h2>New people</h2><p class="sub">Conversations by the month of their very first message</p></div></header>
+        <div class="chart" id="c-newpeople"></div>
+      </article>
+      <article class="card wide" id="milestoneCard">
+        <header><div><h2>Milestones</h2><p class="sub">Firsts and big round numbers</p></div></header>
+        <ol class="milestones" id="milestoneList"></ol>
+      </article>
+      </div>
+    </section>
 
+    <section class="dash-section" id="sec-groups">
+      <h2 class="section-title">Group chats</h2>
+      <div class="grid">
+      <article class="card">
+        <header><div><h2>Who talks most in groups</h2><p class="sub">Messages sent in group chats, by person</p></div></header>
+        <div class="chart tall" id="c-groupsenders"></div>
+      </article>
+      <article class="card">
+        <header><div><h2>Group vs 1-on-1</h2><p class="sub">Share of messages in group chats, per month</p></div></header>
+        <div class="chart" id="c-groupshare"></div>
+      </article>
+      </div>
+    </section>
+
+    <section class="dash-section" id="sec-replies">
+      <h2 class="section-title">Conversations &amp; replies</h2>
+      <div class="grid">
+      <article class="card">
+        <header><div><h2>Sent vs received</h2><p class="sub">Overall split</p></div></header>
+        <div class="chart" id="c-split"></div>
+      </article>
+      <article class="card">
+        <header><div><h2>Who's carrying the conversation</h2><p class="sub">Share of messages you sent, per month</p></div></header>
+        <div class="chart" id="c-share"></div>
+      </article>
       <article class="card">
         <header><div><h2>Reply speed</h2><p class="sub">How quickly each side answers (within 24h)</p></div></header>
         <div class="chart" id="c-reply"></div>
       </article>
-
+      <article class="card">
+        <header><div><h2>Reply speed by hour</h2><p class="sub">Median time to answer, by the hour the reply was sent</p></div></header>
+        <div class="chart" id="c-replyhour"></div>
+      </article>
+      <article class="card">
+        <header><div><h2>Conversation length</h2><p class="sub" id="sessionNote">A conversation ends after 6 hours of quiet</p></div></header>
+        <div class="chart" id="c-sessions"></div>
+      </article>
       <article class="card">
         <header><div><h2>Texting habits</h2><p class="sub">Conversation starters (after 6h of quiet), double texts and message traits</p></div></header>
         <div class="chart" id="c-behavior"></div>
       </article>
+      </div>
+    </section>
 
+    <section class="dash-section" id="sec-content">
+      <h2 class="section-title">Content</h2>
+      <div class="grid">
+      <article class="card wide" id="distinctCard">
+        <header><div><h2>What you talk about</h2><p class="sub" id="distinctNote">Words that set this conversation apart from all the others</p></div></header>
+        <div class="chart tall" id="c-distinct"></div>
+      </article>
       <article class="card wide">
         <header><div><h2>Most-used words</h2><p class="sub">Common filler words are left out</p></div></header>
         <div class="chart tall" id="c-words"></div>
       </article>
+      <article class="card">
+        <header><div><h2>Message length</h2><p class="sub">Share of messages by length (reactions excluded)</p></div></header>
+        <div class="chart" id="c-length"></div>
+      </article>
+      <article class="card">
+        <header><div><h2>Average length over time</h2><p class="sub">Characters per message, by month</p></div></header>
+        <div class="chart" id="c-length-trend"></div>
+      </article>
+      <article class="card">
+        <header><div><h2>Top emoji</h2><p class="sub">Most-used emoji, sent and received</p></div></header>
+        <div class="chart tall" id="c-emoji"></div>
+      </article>
+      <article class="card">
+        <header><div><h2>Emoji over time</h2><p class="sub">Your top emoji, per month</p></div></header>
+        <div class="chart tall" id="c-emojitrend"></div>
+      </article>
+      <article class="card">
+        <header><div><h2>Shared links</h2><p class="sub">Most-linked websites</p></div></header>
+        <div class="chart tall" id="c-domains"></div>
+      </article>
+      <article class="card">
+        <header><div><h2>Vocabulary</h2><p class="sub">Different words used per month</p></div></header>
+        <div class="chart" id="c-vocab"></div>
+      </article>
+      <article class="card wide">
+        <header><div><h2>Mood over time</h2><p class="sub">Average tone per message from a small word and emoji list (3-month average)</p></div></header>
+        <div class="chart" id="c-mood"></div>
+      </article>
+      <article class="card">
+        <header><div><h2>Pictures, videos &amp; attachments</h2><p class="sub">Attachments by type</p></div></header>
+        <div class="chart" id="c-media"></div>
+      </article>
+      <article class="card">
+        <header><div><h2>Attachments over time</h2><p class="sub">Per month, by type</p></div></header>
+        <div class="chart" id="c-media-trend"></div>
+      </article>
+      </div>
+    </section>
+
+    <section class="dash-section" id="sec-sources">
+      <h2 class="section-title">Sources</h2>
+      <div class="grid">
+      <article class="card wide">
+        <header><div><h2>Platform mix</h2><p class="sub">Messages per month by app</p></div></header>
+        <div class="chart" id="c-platforms"></div>
+      </article>
+      </div>
+    </section>
+
+    <section class="dash-section" id="sec-wrapped">
+      <h2 class="section-title">Year in review</h2>
+      <div class="grid">
+        <article class="card wide">
+          <header>
+            <div><h2>Your year in messages</h2><p class="sub">A shareable summary of one year (follows the conversation, source and people filters)</p></div>
+            <div class="wrap-actions"><div class="seg" id="wrapYears" role="group" aria-label="Year"></div><button class="btn small" id="wrapSave">Save PNG</button></div>
+          </header>
+          <div class="wrapped"><canvas id="wrapCanvas" width="1080" height="1350" aria-label="Year in review image"></canvas></div>
+        </article>
+      </div>
     </section>
 
     <section id="callsSection" hidden>
@@ -215,6 +315,7 @@
   <script src="js/whatsapp.js"></script>
   <script src="js/imessage.js"></script>
   <script src="js/demo.js"></script>
+  <script src="js/sentiment.js"></script>
   <script src="js/analysis.js"></script>
   <script src="js/charts.js"></script>
   <script src="js/app.js"></script>
