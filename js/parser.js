@@ -104,16 +104,46 @@ function smsParserWorker(self, lib) {
     return c === 32 || c === 10 || c === 13 || c === 9;
   }
 
+  /** UTF-8 byte length of s[from, to). */
+  function utf8len(s, from, to) {
+    let n = 0;
+    for (let i = from; i < to; i++) {
+      const c = s.charCodeAt(i);
+      if (c < 0x80) n++;
+      else if (c < 0x800) n += 2;
+      else if (c >= 0xd800 && c < 0xdc00 && i + 1 < to) { n += 4; i++; } // surrogate pair
+      else n += 3;
+    }
+    return n;
+  }
+
   // Resumable tag scanner. Feed it decoded text in arbitrary chunks; it calls
   // onOpen(name, attrs, selfClosing) and onClose(name). Attributes named in
-  // `skipAttrs` are not stored; instead attrs[name + 'Len'] holds their length.
-  function createScanner(onOpen, onClose, skipAttrs) {
+  // `skipAttrs` are not stored; instead attrs[name + 'Len'] holds their length and
+  // attrs[name + 'At'] the file byte offset where their value starts, so a skipped
+  // base64 attachment can be read back later. `startByte` is where the decoded
+  // text starts in the file (3 after a UTF-8 byte order mark).
+  function createScanner(onOpen, onClose, skipAttrs, startByte = 0) {
     let buf = '';
     let pos = 0;
     let tag = null; // { name, attrs } while inside a start tag
     let skipQuote = null;
     let skipLen = 0;
     let skipName = '';
+    // Byte accounting: buf[0] is at file byte `base`; buf[0..mark) is `markBytes` bytes.
+    // Skipped values are base64 (ASCII), so they're counted by length, not re-scanned.
+    let base = startByte;
+    let mark = 0;
+    let markBytes = 0;
+    const byteAt = (idx) => {
+      markBytes += utf8len(buf, mark, idx);
+      mark = idx;
+      return base + markBytes;
+    };
+    const skipAscii = (idx) => {
+      markBytes += idx - mark;
+      mark = idx;
+    };
 
     function run() {
       const b = buf;
@@ -123,6 +153,7 @@ function smsParserWorker(self, lib) {
           const end = b.indexOf(skipQuote, pos);
           if (end < 0) { skipLen += n - pos; pos = n; return; }
           skipLen += end - pos;
+          skipAscii(end);
           tag.attrs[skipName + 'Len'] = skipLen;
           pos = end + 1;
           skipQuote = null;
@@ -197,6 +228,7 @@ function smsParserWorker(self, lib) {
           skipLen = 0;
           skipName = name;
           pos = j + 1;
+          tag.attrs[name + 'At'] = byteAt(pos);
           continue;
         }
         const end = b.indexOf(quote, j + 1);
@@ -208,6 +240,10 @@ function smsParserWorker(self, lib) {
 
     return {
       feed(text) {
+        if (skipQuote !== null) skipAscii(pos);
+        base = byteAt(pos);
+        mark = 0;
+        markBytes = 0;
         buf = pos < buf.length ? buf.slice(pos) + text : text;
         pos = 0;
         run();
@@ -337,11 +373,18 @@ function smsParserWorker(self, lib) {
         if (p.text && p.text !== 'null') texts.push(p.text);
         continue;
       }
-      if (ct.startsWith('image/')) { if (ct === 'image/gif') rec.gf++; else rec.ph++; }
-      else if (ct.startsWith('video/')) rec.vd++;
-      else if (ct.startsWith('audio/')) rec.au++;
-      else rec.ot++;
+      let k;
+      if (ct.startsWith('image/')) k = ct === 'image/gif' ? 'gf' : 'ph';
+      else if (ct.startsWith('video/')) k = 'vd';
+      else if (ct.startsWith('audio/')) k = 'au';
+      else k = 'ot';
+      rec[k]++;
       if (p.dataLen) rec.mb += Math.floor(p.dataLen * 0.75);
+      // Where the base64 data sits in this file, so the message list can decode and show it.
+      const name = [p.cl, p.name, p.fn].find((x) => x && x !== 'null') || 'attachment';
+      const att = { n: name, k, t: ct };
+      if (p.dataLen && p.dataAt != null) Object.assign(att, { z: 0, b: p.dataAt, l: p.dataLen, u: Math.floor(p.dataLen * 0.75) });
+      (rec.att || (rec.att = [])).push(att);
     }
     analyzeText(texts.join('\n'), rec);
     stampTime(rec);
@@ -381,7 +424,10 @@ function smsParserWorker(self, lib) {
   }
 
   async function parseFile(file) {
-    const scanner = createScanner(onOpen, onClose, new Set(['data']));
+    // TextDecoder drops a leading byte order mark, so decoded text starts 3 bytes in.
+    const head = new Uint8Array(await file.slice(0, 3).arrayBuffer());
+    const bom = head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf ? 3 : 0;
+    const scanner = createScanner(onOpen, onClose, new Set(['data']), bom);
     const decoder = new TextDecoder('utf-8');
     let offset = 0;
     while (offset < file.size) {

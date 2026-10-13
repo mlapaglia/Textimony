@@ -74,6 +74,14 @@ function buildDemoFiles() {
     }
     return out;
   };
+  // A few base64 images reused across the demo MMS (kept small so the XML stays modest).
+  const toBase64 = (bytes) => {
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  };
+  const photoPool = Array.from({ length: 8 }, () => toBase64(demoPng(rand, 64, 48)));
+  const gifPool = Array.from({ length: 3 }, () => toBase64(demoGif(rand, 64, 48, 3)));
   const fakeData = (n) => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
     let s = '';
@@ -96,9 +104,12 @@ function buildDemoFiles() {
   function mmsXml(addressList, name, t, sent, body, media, fromNumber) {
     const parts = ['<part seq="-1" ct="application/smil" name="null" chset="null" cd="null" fn="null" cid="&lt;smil&gt;" cl="smil.xml" ctt_s="null" ctt_t="null" text="&lt;smil&gt;&lt;head&gt;&lt;/head&gt;&lt;body&gt;&lt;/body&gt;&lt;/smil&gt;" />'];
     if (media) {
-      const ct = { photo: 'image/jpeg', gif: 'image/gif', video: 'video/mp4', audio: 'audio/amr', vcard: 'text/x-vCard' }[media];
-      const size = { photo: 4000, gif: 2500, video: 12000, audio: 1500, vcard: 200 }[media];
-      parts.push(`<part seq="0" ct="${ct}" name="null" chset="null" cd="null" fn="null" cid="&lt;0&gt;" cl="file" ctt_s="null" ctt_t="null" text="null" data="${fakeData(size + Math.floor(rand() * size))}" />`);
+      const ct = { photo: 'image/png', gif: 'image/gif', video: 'video/mp4', audio: 'audio/amr', vcard: 'text/x-vCard' }[media];
+      const size = { video: 12000, audio: 1500, vcard: 200 }[media];
+      const cl = { photo: `IMG_${2000 + Math.floor(rand() * 8000)}.png`, gif: 'giphy.gif', video: 'VID_clip.mp4', audio: 'voice.amr', vcard: 'contact.vcf' }[media];
+      // Real (tiny) images for photos and GIFs; video, audio and vCards are junk bytes.
+      const data = media === 'photo' ? pick(photoPool) : media === 'gif' ? pick(gifPool) : fakeData(size + Math.floor(rand() * size));
+      parts.push(`<part seq="0" ct="${ct}" name="null" chset="null" cd="null" fn="null" cid="&lt;0&gt;" cl="${cl}" ctt_s="null" ctt_t="null" text="null" data="${data}" />`);
     }
     if (body) parts.push(`<part seq="0" ct="text/plain" name="null" chset="106" cd="null" fn="null" cid="&lt;text&gt;" cl="text.txt" ctt_s="null" ctt_t="null" text="${esc(body)}" />`);
     const addrs = sent

@@ -13,7 +13,7 @@ const S = {
   // `auto` is false once picked by hand.
   owners: { 2: { name: '', auto: true }, 3: { name: '', auto: true } },
   firstSeen: new Map(), // key -> time of the first message ever loaded for that conversation
-  archives: [], // loaded export zips; message attachments point into these by index (att.z)
+  archives: [], // loaded export files (zips, SMS XML); message attachments point into these by index (att.z)
   docFreq: null, // { sig, value } cache for "What you talk about"
   leader: { sort: 'n', asc: false, all: false }, // leaderboard sorting
   wrapYear: null,
@@ -73,7 +73,10 @@ async function loadFiles(fileList) {
     // go together so their date formats can be worked out from each other.
     const kinds = await Promise.all(files.map(fileKind));
     const of = (kind) => files.filter((f, i) => kinds[i] === kind);
-    const jobs = of('sms').map((f) => ({ files: [f], parse: (cb) => parseBackupFile(f, cb) }));
+    const jobs = of('sms').map((f) => {
+      const attBase = S.archives.push(f) - 1;
+      return { files: [f], attBase, parse: (cb) => parseBackupFile(f, cb) };
+    });
     const gchat = of('gchat');
     if (gchat.length) {
       // Attachments reference their zip by index into this job's files; offset that into S.archives.
@@ -1016,13 +1019,24 @@ function attachmentEl(a) {
   return el;
 }
 
+/** The attachment's bytes: base64 inside an SMS backup (att.b/att.l) or an entry in a zip. */
+async function attachmentBlob(a, type) {
+  const file = S.archives[a.z];
+  if (a.b != null) {
+    const b64 = (await file.slice(a.b, a.b + a.l).text()).replace(/&#(?:10|13);|\s/g, '');
+    const res = await fetch(`data:${type || 'application/octet-stream'};base64,${b64}`);
+    return res.blob();
+  }
+  Media.zip = Media.zip || zipLib();
+  return Media.zip.readEntryBlob({ file, offset: a.o, csize: a.c, method: a.m, name: a.p }, type);
+}
+
 async function loadAttachment(el) {
   const a = el._att;
-  const type = mimeOf(a.n) || mimeOf(a.p || '');
+  const type = (a.t && a.t !== 'application/octet-stream' ? a.t : '') || mimeOf(a.n) || mimeOf(a.p || '');
   let url;
   try {
-    Media.zip = Media.zip || zipLib();
-    const blob = await Media.zip.readEntryBlob({ file: S.archives[a.z], offset: a.o, csize: a.c, method: a.m, name: a.p }, type);
+    const blob = await attachmentBlob(a, type);
     url = URL.createObjectURL(blob);
     Media.urls.push(url);
   } catch (err) {
