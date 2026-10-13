@@ -56,7 +56,7 @@ function messageLib(vader) {
   // skin tone and ZWJ sequences (👩‍👩‍👧 counts once).
   const EMOJI_RE = /\p{RI}\p{RI}|[#*0-9]️?⃣|\p{Extended_Pictographic}(?:️|\p{EMod})?(?:‍\p{Extended_Pictographic}(?:️|\p{EMod})?)*/gu;
   const NOT_EMOJI = new Set(['©', '®', '™']);
-  const WORD_RE = /[\p{L}\p{N}']+/gu;
+  const WORD_RE = /[\p{L}\p{N}'‘’ʼ]+/gu; // curly apostrophes keep "I’ve" one word
   const LINK_RE = /https?:\/\/|www\.[a-z0-9-]+\./i;
   const LAUGH_RE = /\b(?:lol+|lmf?ao+|rofl|(?:ha){2,}h?|(?:he){2,}|(?:ja){2,})\b|😂|🤣|😆|💀/iu;
   const LOVE_RE = /\b(?:love (?:you|u|ya)|luv (?:you|u)|ily|xoxo)\b|❤|😍|🥰|😘|💕|💗|💖/iu;

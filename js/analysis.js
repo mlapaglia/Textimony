@@ -188,7 +188,6 @@ function aggregateMessages(msgs) {
     milestones: [], // { t, k (null = overall), n }
   };
   const lastByThread = new Map(); // key -> open session { k, t, o, start, n }
-  const tokenRe = /[\p{L}\p{N}']+/gu;
   let total = 0;
 
   const closeSession = (ss) => {
@@ -279,15 +278,11 @@ function aggregateMessages(msgs) {
       mon.lenN[o]++;
       A.words[o] += r.wc;
 
-      const tokens = r.b.toLowerCase().match(tokenRe);
-      if (tokens) {
-        for (let tk of tokens) {
-          tk = tk.replace(/^'+|'+$/g, '');
-          if (tk.length < 2 || STOPWORDS.has(tk) || /^\d+$/.test(tk)) continue;
-          let wf = A.wordFreq.get(tk);
-          if (!wf) A.wordFreq.set(tk, (wf = [0, 0]));
-          wf[o]++;
-        }
+      for (const tk of tokensOf(r.b)) {
+        if (STOPWORDS.has(tk)) continue;
+        let wf = A.wordFreq.get(tk);
+        if (!wf) A.wordFreq.set(tk, (wf = [0, 0]));
+        wf[o]++;
       }
     }
 
@@ -386,9 +381,12 @@ const MOOD_THRESHOLD = 0.05; // VADER's standard cut-off for positive / negative
 const URL_HOST_RE = /(?:https?:\/\/|\bwww\.)([^\s/?#:<>"')\]]+)/gi;
 const DOMAIN_ALIASES = { 'youtu.be': 'youtube.com', 'x.com': 'twitter.com', 'vm.tiktok.com': 'tiktok.com', 'instagr.am': 'instagram.com', 'amzn.to': 'amazon.com', 'a.co': 'amazon.com', 'goo.gl': 'google.com', 'maps.app.goo.gl': 'google.com' };
 
-/** Lowercased word tokens of a message body (curly apostrophes normalized). */
+/**
+ * Lowercased word tokens of a message body, at least 2 characters and not just digits.
+ * Curly / modifier apostrophes (I’ve, Iʼm) become ' so contractions stay one word.
+ */
 function tokensOf(body) {
-  const m = body.toLowerCase().replace(/[‘’]/g, "'").match(TOKEN_RE);
+  const m = body.toLowerCase().replace(/[‘’ʼ]/g, "'").match(TOKEN_RE);
   if (!m) return [];
   const out = [];
   for (let tk of m) {
