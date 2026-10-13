@@ -51,6 +51,8 @@ function buildDemoFiles() {
     'Liked “dinner at 7?”', 'Loved “see you soon 😊”', 'Laughed at “that was hilarious 🤣🤣”',
     'That reminds me, we still need to plan the camping trip for next month. Are you still in?',
     'Okay so long story short the car is fine but I need a ride to pick it up on Thursday after work if that is ok',
+    'ugh this traffic is the worst', 'damn I forgot my keys again', 'that meeting was so bad', 'wtf is going on with the wifi',
+    'I hate mondays', 'this shit is hilarious 😂', 'sorry, rough day 😞', 'my phone died, so annoying', 'not great tbh',
   ];
   const serviceLines = ['Your verification code is 482913', 'Your package has been delivered.', 'Reminder: appointment tomorrow at 9:00 AM. Reply C to confirm.'];
 

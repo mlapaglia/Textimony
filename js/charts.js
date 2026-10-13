@@ -866,37 +866,63 @@ function vocabOption(ui, C) {
   return opt;
 }
 
+/** Share of messages that read positive (up) and negative (down) per month, you vs them. */
 function moodOption(ui, C) {
   const keys = [...C.mood.keys()].sort((a, b) => a - b);
-  // 3-month moving average of the per-message score, weighted by message count.
-  const mk = (o) => keys.map((mo, i) => {
-    let sum = 0, n = 0;
-    for (let j = Math.max(0, i - 2); j <= i; j++) {
-      const m = C.mood.get(keys[j]);
-      sum += m.sum[o];
-      n += m.n[o];
-    }
-    return [monthToTs(mo), n ? Math.round((sum / n) * 1000) / 1000 : null];
+  const pct = (n, d) => (d ? Math.round((n / d) * 1000) / 10 : null);
+  const series = (name, o, sign, color, opacity) => ({
+    ...bar(name, keys.map((mo) => {
+      const m = C.mood.get(mo);
+      const v = pct(sign > 0 ? m.pos[o] : m.neg[o], m.n[o]);
+      return [monthToTs(mo), v == null ? null : sign * v];
+    }), color, ui, { stack: o ? 'you' : 'them', rounded: false }),
+    itemStyle: { color, opacity, borderRadius: sign > 0 ? [3, 3, 0, 0] : [0, 0, 3, 3] },
+    barMaxWidth: 9,
   });
   const opt = baseOption(ui, { boxZoom: true });
   opt.xAxis = timeAxis(ui);
-  opt.yAxis = valAxis(ui);
+  opt.yAxis = valAxis(ui, { axisLabel: { color: ui.muted, fontSize: 11, formatter: (v) => `${Math.abs(v)}%` } });
+  opt.tooltip = tooltipBase(ui, 'axis', 'shadow');
+  opt.tooltip.formatter = (ps) => {
+    const mo = keys[ps[0].dataIndex];
+    const m = C.mood.get(mo);
+    const row = (label, o, color) => m.n[o]
+      ? `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(color)}${label}</span><span><b>${pct(m.pos[o], m.n[o])}%</b> positive · <b>${pct(m.neg[o], m.n[o])}%</b> negative <span style="color:#888">of ${fmtNum(m.n[o])}</span></span></div>`
+      : '';
+    return `<div style="font-weight:600;margin-bottom:4px">${monthName(monthToTs(mo))}</div>${row('You', 1, ui.sent)}${row('Them', 0, ui.recv)}`;
+  };
+  // Positive and negative bars share a name, so the legend toggles both together.
+  opt.legend.data = ['You', 'Them'];
+  opt.series = [
+    series('You', 1, 1, ui.sent, 1),
+    series('You', 1, -1, ui.sent, 0.5),
+    series('Them', 0, 1, ui.recv, 1),
+    series('Them', 0, -1, ui.recv, 0.5),
+  ];
+  opt.dataZoom = [insideZoom({ xAxisIndex: 0 })];
+  return opt;
+}
+
+/** Swear words per 1,000 messages, per month, you vs them. */
+function swearOption(ui, C) {
+  const keys = [...C.swear.keys()].sort((a, b) => a - b);
+  const rate = (o) => keys.map((mo) => {
+    const m = C.swear.get(mo);
+    return [monthToTs(mo), m.n[o] ? Math.round((m.w[o] / m.n[o]) * 10000) / 10 : null, m.w[o], m.n[o]];
+  });
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = timeAxis(ui);
+  opt.yAxis = valAxis(ui, { min: 0 });
   opt.tooltip = tooltipBase(ui, 'axis', 'line');
   opt.tooltip.formatter = (ps) => {
-    let html = `<div style="font-weight:600;margin-bottom:4px">${monthName(ps[0].value[0])} <span style="color:#888;font-weight:400">(3-month average)</span></div>`;
+    let html = `<div style="font-weight:600;margin-bottom:4px">${monthName(ps[0].value[0])}</div>`;
     for (const p of ps) {
-      const v = p.value[1];
-      html += `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(p.color)}${p.seriesName}</span><b>${v == null ? '–' : (v > 0 ? '+' : '') + v.toFixed(2)}</b></div>`;
+      const [, v, w, n] = p.value;
+      html += `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(p.color)}${p.seriesName}</span><span><b>${v == null ? '–' : v}</b> per 1,000 messages <span style="color:#888">(${fmtNum(w)} in ${fmtNum(n)})</span></span></div>`;
     }
     return html;
   };
-  opt.series = [
-    line('You', mk(1), ui.sent, {
-      connectNulls: true,
-      markLine: { silent: true, symbol: 'none', lineStyle: { color: ui.muted, type: 'dashed', width: 1 }, label: { color: ui.muted, formatter: 'neutral', position: 'insideEndTop', fontSize: 11 }, data: [{ yAxis: 0 }] },
-    }),
-    line('Them', mk(0), ui.recv, { connectNulls: true }),
-  ];
+  opt.series = [line('You', rate(1), ui.sent, { connectNulls: true }), line('Them', rate(0), ui.recv, { connectNulls: true })];
   opt.dataZoom = [insideZoom({ xAxisIndex: 0 })];
   return opt;
 }

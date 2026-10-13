@@ -240,8 +240,12 @@
         <div class="chart" id="c-vocab"></div>
       </article>
       <article class="card wide">
-        <header><div><h2>Mood over time</h2><p class="sub">Average tone per message from a small word and emoji list (3-month average)</p></div></header>
+        <header><div><h2>Mood over time</h2><p class="sub" id="moodNote">Share of messages that read positive (up) or negative (down) each month</p></div></header>
         <div class="chart" id="c-mood"></div>
+      </article>
+      <article class="card wide">
+        <header><div><h2>Swearing</h2><p class="sub" id="swearNote">Swear words per 1,000 messages</p></div></header>
+        <div class="chart" id="c-swear"></div>
       </article>
       <article class="card">
         <header><div><h2>Pictures, videos &amp; attachments</h2><p class="sub">Attachments by type</p></div></header>
@@ -314,13 +318,13 @@
 
   <div class="drop-overlay" aria-hidden="true"><div>Drop backup files to load them</div></div>
 
+  <script src="js/vendor/vader.js"></script>
   <script src="js/zip.js"></script>
   <script src="js/parser.js"></script>
   <script src="js/googlechat.js"></script>
   <script src="js/whatsapp.js"></script>
   <script src="js/imessage.js"></script>
   <script src="js/demo.js"></script>
-  <script src="js/sentiment.js"></script>
   <script src="js/analysis.js"></script>
   <script src="js/charts.js"></script>
   <script src="js/app.js"></script>

@@ -1,9 +1,56 @@
 /*
  * Text analysis and time stamping shared by every parser worker. Like the workers,
- * it is serialized into the worker source, so it must be self-contained.
+ * it is serialized into the worker source, so it must be self-contained. `vader`
+ * (from js/vendor/vader.js) is optional; without it messages get no mood score.
  */
-function messageLib() {
+function messageLib(vader) {
   'use strict';
+
+  // Swear words, grouped into families so "fucking" and "fuck" count as one word.
+  const SWEAR_FAMILIES = [
+    ['fuck', /^(?:mother)?f+u+c+k+\w*$|^(?:fuk|fukk|fucc|fking|fkn|fk)\w*$/],
+    ['shit', /^(?:bull|horse|dip|chicken)?sh+[i1]+t+(?:s|ty|tier|tiest|ting|ted|head|show|load|stain|e)?$/],
+    ['damn', /^(?:god)?dam(?:n|m)\w*$|^dammit$/],
+    ['bitch', /^bitch\w*$/],
+    ['ass', /^(?:ass|asses|arse|arses|asshole|assholes|jackass|dumbass|dumbasses|badass|smartass|fatass|lazyass)$/],
+    ['bastard', /^bastards?$/],
+    ['crap', /^crap(?:s|py|pier|piest|ped)?$/],
+    ['piss', /^piss(?:ed|es|ing|y)?$/],
+    ['dick', /^dick(?:s|head|heads)?$/],
+    ['cock', /^cock(?:s|sucker|suckers)?$/],
+    ['hell', /^hell$/],
+    ['cunt', /^cunts?$/],
+    ['twat', /^twats?$/],
+    ['wanker', /^wank(?:er|ers|ing)?$/],
+    ['prick', /^pricks?$/],
+    ['bollocks', /^bollocks$/],
+    ['douche', /^douche(?:s|bag|bags)?$/],
+    ['wtf', /^wtf$/],
+    ['stfu', /^stfu$/],
+    ['gtfo', /^gtfo$/],
+    ['fml', /^fml$/],
+    ['omfg', /^omfg$/],
+  ];
+  const SWEAR_ANY = new RegExp(SWEAR_FAMILIES.map(([, re]) => re.source).join('|'));
+
+  /** Family name ("fuck", "shit", …) of a lowercase word, or null. */
+  function swearFamily(word) {
+    if (!SWEAR_ANY.test(word)) return null;
+    for (const [name, re] of SWEAR_FAMILIES) if (re.test(word)) return name;
+    return null;
+  }
+
+  // VADER has no emoji, so (like the Python VADER) emoji are swapped for words it scores.
+  const EMOJI_WORDS = {
+    '😂': 'lol', '🤣': 'lol', '😆': 'lol', '😹': 'lol', '😅': 'lol',
+    '😀': 'happy', '😃': 'happy', '😄': 'happy', '😁': 'happy', '😊': 'smile', '🙂': 'smile', '☺': 'smile', '😺': 'smile', '😸': 'smile', '😇': 'smile',
+    '❤': 'love', '😍': 'love', '🥰': 'love', '😘': 'kiss', '😚': 'kiss', '💕': 'love', '💖': 'love', '💗': 'love', '💓': 'love', '💞': 'love', '💘': 'love', '😻': 'love',
+    '💙': 'love', '💚': 'love', '💛': 'love', '💜': 'love', '🧡': 'love', '🤍': 'love', '🤗': 'hug',
+    '🥳': 'celebrate', '🎉': 'celebrate', '🎊': 'celebrate', '🤩': 'wow', '😎': 'cool', '👍': 'good', '👏': 'great', '🙌': 'yay', '💯': 'great', '🔥': 'cool', '✨': 'nice', '🙏': 'thanks', '😋': 'nice',
+    '😢': 'sad', '😞': 'sad', '😔': 'sad', '😟': 'worried', '🙁': 'sad', '☹': 'sad', '😥': 'sad', '😓': 'tired', '😩': 'tired', '😫': 'tired', '😭': 'crying', '💔': 'heartbroken',
+    '😡': 'furious', '🤬': 'furious', '😠': 'angry', '😤': 'annoyed', '🙄': 'annoyed', '😒': 'annoyed', '😕': 'confused', '😬': 'awkward',
+    '😱': 'shocked', '😨': 'scared', '😰': 'worried', '🤢': 'disgusted', '🤮': 'disgusting', '🤒': 'sick', '😷': 'sick', '👎': 'bad',
+  };
 
   // Emoji: flags, keycaps, and pictographs with optional variation selector,
   // skin tone and ZWJ sequences (👩‍👩‍👧 counts once).
@@ -47,6 +94,17 @@ function messageLib() {
       }
     }
     rec.f = f;
+    if (f & T_REACTION) return;
+
+    let sw = 0;
+    if (words) for (const w of words) if (swearFamily(w.toLowerCase())) sw++;
+    if (sw) rec.sw = sw;
+
+    if (vader) {
+      // Mood: VADER compound score in [-1, 1], with emoji turned into words it knows.
+      const text = emo ? body.replace(EMOJI_RE, (x) => ` ${EMOJI_WORDS[x.replace(/\uFE0F/g, '')] || ''} `) : body;
+      if (/[\p{L}]/u.test(text)) rec.v = Math.round(vader.polarityScores(text).compound * 100) / 100;
+    }
   }
 
   function stampTime(rec) {
@@ -57,7 +115,7 @@ function messageLib() {
     rec.mo = dt.getFullYear() * 12 + dt.getMonth();
   }
 
-  return { analyzeText, stampTime, T_REACTION };
+  return { analyzeText, stampTime, swearFamily, T_REACTION };
 }
 
 /*
@@ -458,7 +516,7 @@ function smsParserWorker(self, lib) {
  */
 function runParserWorker(workerFn, payload, { onBatch, onProgress }) {
   return new Promise((resolve, reject) => {
-    const lib = `Object.assign((${messageLib})(), (${zipLib})())`;
+    const lib = `Object.assign((${messageLib})((${vaderLib})()), (${zipLib})())`;
     const src = `(${workerFn})(self, ${lib});`;
     const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
     const worker = new Worker(url);

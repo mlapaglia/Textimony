@@ -532,7 +532,19 @@ function refresh({ timeline = true } = {}) {
     const dm = domainsOption(ui, C);
     Charts.set('c-domains', dm.empty ? emptyOption(ui, 'No links in this selection') : dm.opt);
     put('c-vocab', () => vocabOption(ui, C));
-    put('c-mood', () => moodOption(ui, C));
+    const mt = C.moodTotal;
+    const share = (n, d) => (d ? Math.round((n / d) * 100) + '%' : '–');
+    $('#moodNote').textContent = mt.n[0] + mt.n[1]
+      ? `Share of messages that read positive (up) or negative (down), scored with VADER. You: ${share(mt.pos[1], mt.n[1])} positive, ${share(mt.neg[1], mt.n[1])} negative · Them: ${share(mt.pos[0], mt.n[0])} positive, ${share(mt.neg[0], mt.n[0])} negative`
+      : 'Share of messages that read positive (up) or negative (down) each month';
+    Charts.set('c-mood', mt.n[0] + mt.n[1] ? moodOption(ui, C) : emptyOption(ui, 'No messages with words in this selection'));
+    const st = C.swearTotal;
+    const per1k = (o) => (st.n[o] ? (st.w[o] / st.n[o] * 1000).toFixed(1) : '–');
+    const topSwears = [...C.swearWords.entries()].sort((a, b) => (b[1][0] + b[1][1]) - (a[1][0] + a[1][1])).slice(0, 5).map(([w]) => w);
+    $('#swearNote').textContent = st.w[0] + st.w[1]
+      ? `Swear words per 1,000 messages. You: ${fmtNum(st.w[1])} (${per1k(1)} per 1,000) · Them: ${fmtNum(st.w[0])} (${per1k(0)} per 1,000) · Most used: ${topSwears.join(', ')}`
+      : 'Swear words per 1,000 messages';
+    Charts.set('c-swear', st.w[0] + st.w[1] ? swearOption(ui, C) : emptyOption(ui, 'No swearing in this selection 😇'));
   });
 
   // Sources
@@ -712,10 +724,13 @@ function wrappedStats(base, year) {
   const msgs = base.filter((m) => m.t >= from && m.t < to);
   const A = aggregateMessages(msgs);
   const C = aggregateContent(msgs);
-  const people = [...A.byContact.entries()]
-    .map(([k, bc]) => ({ label: labelFor(k), n: bc.n[0] + bc.n[1] }))
-    .sort((a, b) => b.n - a.n)
-    .slice(0, 5);
+  const single = S.filter.contact !== 'all';
+  const people = single
+    ? senderBreakdown(msgs, S.filter.contact)
+    : [...A.byContact.entries()]
+      .map(([k, bc]) => ({ label: labelFor(k), n: bc.n[0] + bc.n[1] }))
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 5);
   const emoji = [...A.emojiFreq.entries()].sort((a, b) => (b[1][0] + b[1][1]) - (a[1][0] + a[1][1])).slice(0, 3).map(([e]) => e);
   const word = [...A.wordFreq.entries()].sort((a, b) => (b[1][0] + b[1][1]) - (a[1][0] + a[1][1]))[0];
   const site = [...C.domains.entries()].sort((a, b) => (b[1][0] + b[1][1]) - (a[1][0] + a[1][1]))[0];
@@ -726,7 +741,29 @@ function wrappedStats(base, year) {
     const t = S.firstSeen.get(k);
     if (t >= from && t < to) newPeople++;
   }
-  return { year, A, people, emoji, word: word && word[0], site: site && site[0], nightPct: A.n ? (night / A.n) * 100 : 0, newPeople };
+  return { year, A, people, peopleTitle: single ? 'Who sent what' : 'Your people', emoji, word: word && word[0], site: site && site[0], nightPct: A.n ? (night / A.n) * 100 : 0, newPeople };
+}
+
+/**
+ * Messages per sender in one conversation: you and the other person, or each group
+ * member (when the export says who sent it). Top 5 rows, folding the rest into "Everyone else".
+ */
+function senderBreakdown(msgs, key) {
+  const group = key.startsWith('g:');
+  const byId = new Map();
+  for (const m of msgs) {
+    const id = m.o ? 'You' : group ? m.sn || m.sk || '' : key;
+    byId.set(id, (byId.get(id) || 0) + 1);
+  }
+  const byLabel = new Map();
+  for (const [id, n] of byId) {
+    const label = id === 'You' ? 'You' : id ? senderLabel(id) : 'Unknown sender';
+    byLabel.set(label, (byLabel.get(label) || 0) + n);
+  }
+  const rows = [...byLabel].map(([label, n]) => ({ label, n })).sort((a, b) => b.n - a.n);
+  if (rows.length <= 5) return rows;
+  const rest = rows.slice(4).reduce((sum, r) => sum + r.n, 0);
+  return [...rows.slice(0, 4), { label: `Everyone else (${rows.length - 4} people)`, n: rest, rest: true }];
 }
 
 function drawWrapped(canvas, W, ui) {
@@ -761,10 +798,15 @@ function drawWrapped(canvas, W, ui) {
   text(`messages · ${fmtNum(A.dir[1])} sent, ${fmtNum(A.dir[0])} received`, 80, 395, 32, { color: soft });
 
   // Top people with bars
-  text('Your people', 80, 490, 34, { weight: 700 });
-  const maxN = W.people[0] ? W.people[0].n : 1;
+  text(W.peopleTitle, 80, 490, 34, { weight: 700 });
+  const maxN = Math.max(1, ...W.people.filter((p) => !p.rest).map((p) => p.n));
   W.people.forEach((p, i) => {
     const y = 535 + i * 62;
+    if (p.rest) {
+      // Combined senders can outnumber the top one, so no bar: just the count.
+      text(`${p.label}: ${fmtNum(p.n)} messages`, 80, y + 32, 26, { color: soft, max: 920 });
+      return;
+    }
     ctx.fillStyle = 'rgba(255,255,255,0.10)';
     ctx.beginPath();
     ctx.roundRect(80, y, 560, 46, 10);

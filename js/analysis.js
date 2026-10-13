@@ -6,6 +6,8 @@
  *   s  source: 0 = SMS Backup & Restore, 1 = Google Chat, 2 = WhatsApp, 3 = iMessage
  *   sn sender name (Google Chat: group messages you received; WhatsApp / iMessage: every message)
  *   sk sender's 1-on-1 thread key (SMS group messages you received)
+ *   v  mood: VADER compound score in [-1, 1] (messages with words; not reactions)
+ *   sw number of swear words (only set when > 0)
  *   k  thread key ('g:' prefix = group chat; Google Chat keys contain 'gc:', WhatsApp 'wa:', iMessage 'im:')
  *   b  text body                   l  length in characters
  *   wc word count    e  array of emoji or null      f  trait bit flags
@@ -380,7 +382,7 @@ function aggregateMessages(msgs) {
 }
 
 const TOKEN_RE = /[\p{L}\p{N}']+/gu;
-const NEGATORS = new Set(["not", "no", "never", "don't", "dont", "isn't", "isnt", "can't", "cant", "won't", "wont", "didn't", "didnt", "doesn't", "doesnt", "wasn't", "wasnt", "aren't", "arent", "nothing", "hardly"]);
+const MOOD_THRESHOLD = 0.05; // VADER's standard cut-off for positive / negative
 const URL_HOST_RE = /(?:https?:\/\/|\bwww\.)([^\s/?#:<>"')\]]+)/gi;
 const DOMAIN_ALIASES = { 'youtu.be': 'youtube.com', 'x.com': 'twitter.com', 'vm.tiktok.com': 'tiktok.com', 'instagr.am': 'instagram.com', 'amzn.to': 'amazon.com', 'a.co': 'amazon.com', 'goo.gl': 'google.com', 'maps.app.goo.gl': 'google.com' };
 
@@ -403,22 +405,12 @@ function domainOf(host) {
   return DOMAIN_ALIASES[h] || h;
 }
 
-/** Mood score of one message: lexicon words (flipped after a negator) plus emoji. */
-function moodOf(tokens, emoji) {
-  let score = 0;
-  for (let i = 0; i < tokens.length; i++) {
-    let v = SENTIMENT.get(tokens[i]);
-    if (!v) continue;
-    if (NEGATORS.has(tokens[i - 1]) || (i > 1 && NEGATORS.has(tokens[i - 2]))) v = -v;
-    score += v;
-  }
-  if (emoji) for (const e of emoji) score += SENTIMENT.get(e.replace(/️/g, '')) || 0;
-  return score;
-}
+let swearFamilyOf = null; // messageLib().swearFamily, created on first use
 
 /**
  * Second pass for the text-heavy views: emoji per month, shared link domains,
- * vocabulary (unique words) per month and mood per month.
+ * vocabulary (unique words) per month, mood (positive / negative share) per month
+ * and swearing.
  */
 function aggregateContent(msgs) {
   const C = {
@@ -426,8 +418,13 @@ function aggregateContent(msgs) {
     emojiTotals: new Map(), // emoji -> n
     domains: new Map(), // domain -> [r, s]
     vocab: new Map(), // mo -> [unique words received, unique words sent]
-    mood: new Map(), // mo -> { sum: [r, s], n: [r, s] }
+    mood: new Map(), // mo -> { pos: [r, s], neg: [r, s], n: [r, s] } (messages with a mood score)
+    moodTotal: { pos: [0, 0], neg: [0, 0], n: [0, 0] },
+    swear: new Map(), // mo -> { w: [r, s] swear words, n: [r, s] messages }
+    swearTotal: { w: [0, 0], n: [0, 0] },
+    swearWords: new Map(), // family -> [r, s]
   };
+  swearFamilyOf = swearFamilyOf || messageLib().swearFamily;
   const vocabSets = new Map();
   for (const r of msgs) {
     const o = r.o;
@@ -453,10 +450,29 @@ function aggregateContent(msgs) {
     let vs = vocabSets.get(r.mo);
     if (!vs) vocabSets.set(r.mo, (vs = [new Set(), new Set()]));
     for (const tk of tokens) vs[o].add(tk);
-    let md = C.mood.get(r.mo);
-    if (!md) C.mood.set(r.mo, (md = { sum: [0, 0], n: [0, 0] }));
-    md.sum[o] += moodOf(tokens, r.e);
-    md.n[o]++;
+    if (r.v != null) {
+      let md = C.mood.get(r.mo);
+      if (!md) C.mood.set(r.mo, (md = { pos: [0, 0], neg: [0, 0], n: [0, 0] }));
+      md.n[o]++;
+      C.moodTotal.n[o]++;
+      if (r.v >= MOOD_THRESHOLD) { md.pos[o]++; C.moodTotal.pos[o]++; }
+      else if (r.v <= -MOOD_THRESHOLD) { md.neg[o]++; C.moodTotal.neg[o]++; }
+    }
+    let sm = C.swear.get(r.mo);
+    if (!sm) C.swear.set(r.mo, (sm = { w: [0, 0], n: [0, 0] }));
+    sm.n[o]++;
+    C.swearTotal.n[o]++;
+    if (r.sw) {
+      sm.w[o] += r.sw;
+      C.swearTotal.w[o] += r.sw;
+      for (const tk of tokens) {
+        const fam = swearFamilyOf(tk);
+        if (!fam) continue;
+        let v = C.swearWords.get(fam);
+        if (!v) C.swearWords.set(fam, (v = [0, 0]));
+        v[o]++;
+      }
+    }
   }
   for (const [mo, [rs, ss]] of vocabSets) C.vocab.set(mo, [rs.size, ss.size]);
   return C;

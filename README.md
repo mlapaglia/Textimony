@@ -14,6 +14,9 @@ What your SMS, Google Chat, WhatsApp and iMessage messages reveal about you
 
 All processing occurs in the browser, your data is never uploaded anywhere!
 
+## Credits
+Mood scores come from [VADER](https://github.com/cjhutto/vaderSentiment) (Hutto & Gilbert, 2014) via its JavaScript port [vaderSentiment-js](https://github.com/vaderSentiment/vaderSentiment-js), © Comcast, Apache-2.0. A copy lives in `js/vendor/` with its license and notice.
+
 ## Demo
 Navigate to https://yapalytics.online and click "Try Demo Data".
 
