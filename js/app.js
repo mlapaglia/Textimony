@@ -9,8 +9,9 @@ const S = {
   files: [],
   filter: { contact: 'all', source: 'all', groups: true, people: [], from: null, to: null },
   peopleKeys: null, // Set of thread keys matching filter.people, or null when not filtering
-  waOwner: '', // your sender name in WhatsApp exports
-  waOwnerAuto: true, // false once picked by hand
+  // Your sender name per source whose exports don't mark it (WhatsApp, iMessage);
+  // `auto` is false once picked by hand.
+  owners: { 2: { name: '', auto: true }, 3: { name: '', auto: true } },
   gran: 'auto',
   activeGran: 'month',
   calYear: null,
@@ -26,17 +27,27 @@ const $$ = (sel) => [...document.querySelectorAll(sel)];
 
 // ------------------------------------------------------------------ loading
 
-const SOURCES = { 0: 'SMS', 1: 'Google Chat', 2: 'WhatsApp' };
+const SOURCES = { 0: 'SMS', 1: 'Google Chat', 2: 'WhatsApp', 3: 'iMessage' };
+const SOURCE_MARK = { 1: '💬', 2: '🟢', 3: '🔵' };
 const isZip = (f) => /\.zip$/i.test(f.name) || /zip/.test(f.type);
+/** Records from these sources carry their sender in `sn` and get `o` from S.owners. */
+const hasOwner = (s) => s === 2 || s === 3;
 
-/** 'sms' | 'gchat' | 'whatsapp', from the extension or (for zips) what's inside. */
+/** imessage-exporter txt starts with "May 17, 2022  5:29:42 PM"; WhatsApp with "1/2/24, …". */
+const looksLikeIMessage = (text) =>
+  /^\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{2}, \d{4} {1,2}\d{1,2}:\d{2}:\d{2} [AP]M/.test(text.replace(/^\ufeff/, ''));
+
+/** 'sms' | 'gchat' | 'whatsapp' | 'imessage', from the extension and what's inside. */
 async function fileKind(f) {
-  if (/\.txt$/i.test(f.name)) return 'whatsapp';
+  if (/\.txt$/i.test(f.name)) return looksLikeIMessage(await f.slice(0, 4096).text()) ? 'imessage' : 'whatsapp';
   if (!isZip(f)) return 'sms';
-  const names = (await zipLib().listZip(f)).map((e) => e.name);
-  if (names.some((n) => /(?:^|\/)Google Chat\//.test(n))) return 'gchat';
-  if (names.some((n) => /\.txt$/i.test(n))) return 'whatsapp';
-  throw new Error(`${f.name} isn't a Google Takeout export of Google Chat or a WhatsApp chat export`);
+  const { listZip, readEntryText } = zipLib();
+  const entries = (await listZip(f)).filter((e) => !e.name.endsWith('/'));
+  if (entries.some((e) => /(?:^|\/)Google Chat\//.test(e.name))) return 'gchat';
+  if (entries.some((e) => /(?:^|\/)(?:_chat|WhatsApp[^/]*)\.txt$/i.test(e.name))) return 'whatsapp';
+  const txt = entries.find((e) => /\.txt$/i.test(e.name) && !/(?:^|\/)orphaned\.txt$/i.test(e.name)) || entries.find((e) => /\.txt$/i.test(e.name));
+  if (txt) return looksLikeIMessage(await readEntryText(txt)) ? 'imessage' : 'whatsapp';
+  throw new Error(`${f.name} isn't a Google Takeout, WhatsApp or iMessage export`);
 }
 
 async function loadFiles(fileList) {
@@ -62,6 +73,8 @@ async function loadFiles(fileList) {
     if (gchat.length) jobs.push({ files: gchat, gchat: true, parse: (cb) => parseGoogleChatZips(gchat, cb) });
     const wa = of('whatsapp');
     if (wa.length) jobs.push({ files: wa, parse: (cb) => parseWhatsAppFiles(wa, cb) });
+    const im = of('imessage');
+    if (im.length) jobs.push({ files: im, parse: (cb) => parseIMessageFiles(im, cb) });
 
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i];
@@ -70,8 +83,8 @@ async function loadFiles(fileList) {
       const done = await job.parse({
         onBatch(msgs, calls) {
           for (const m of msgs) {
-            // WhatsApp records get `o` later (see applyWaOwner), so key them by sender.
-            const key = `${m.t}|${m.s === 2 ? m.sn : m.o}|${m.k}|${m.l}|${m.m}`;
+            // WhatsApp / iMessage records get `o` later (see applyOwners), so key them by sender.
+            const key = `${m.t}|${hasOwner(m.s) ? m.sn : m.o}|${m.k}|${m.l}|${m.m}`;
             if (S.seenMsgs.has(key)) continue;
             S.seenMsgs.add(key);
             S.msgs.push(m);
@@ -123,8 +136,8 @@ async function loadFiles(fileList) {
   S.msgs.sort((a, b) => a.t - b.t);
   S.calls.sort((a, b) => a.t - b.t);
   for (const c of S.contacts.values()) c.label = contactLabel(c);
-  if (S.waOwnerAuto) S.waOwner = guessWaOwner();
-  applyWaOwner();
+  for (const s of Object.keys(S.owners)) if (S.owners[s].auto) S.owners[s].name = guessOwner(+s);
+  applyOwners();
   $('#landing').hidden = true;
   $('#dash').hidden = false;
   populateContacts();
@@ -152,15 +165,15 @@ function formatAddr(a) {
 }
 
 function contactLabel(c) {
-  const chat = { 1: '💬', 2: '🟢' }[c.s] || '';
+  const chat = SOURCE_MARK[c.s] || '';
   if (c.group) {
-    if (c.name) return chat + '👥 ' + c.name;
+    if (c.name) return chat + '👥 ' + c.name.split(', ').map(formatAddr).join(', ');
     return chat + '👥 ' + c.addr.split('~').map(formatAddr).join(', ');
   }
-  return (chat ? chat + ' ' : '') + (c.name || formatAddr(c.addr) || c.key);
+  return (chat ? chat + ' ' : '') + (formatAddr(c.name) || formatAddr(c.addr) || c.key);
 }
 
-/** Message source of a thread key: 0 = SMS, 1 = Google Chat, 2 = WhatsApp. */
+/** Message source of a thread key: 0 = SMS, 1 = Google Chat, 2 = WhatsApp, 3 = iMessage. */
 function keySource(key) {
   const c = S.contacts.get(key);
   return (c && c.s) || 0;
@@ -170,20 +183,31 @@ function loadedSources() {
   return new Set([...S.contacts.values()].map((c) => c.s || 0));
 }
 
-// ------------------------------------------------------------------ WhatsApp owner
+// ------------------------------------------------------------------ export owner (WhatsApp, iMessage)
 
 const sameName = (a, b) => a.replace(/[\s~]/g, '').toLowerCase() === b.replace(/[\s~]/g, '').toLowerCase();
 
+/** imessage-exporter calls you "Me" unless the export used --custom-name / --use-caller-id. */
+const isDefaultOwner = (s, name) => s === 3 && name === 'Me';
+
 /**
- * WhatsApp exports don't mark which sender is you. A 1-on-1 chat is named after the
- * other person, so its other sender is you (strong evidence); otherwise you're the
- * sender who shows up in the most chats, then the one with the most messages.
+ * Conversations whose owner has to be worked out: every WhatsApp chat, and the
+ * iMessage ones exported with a custom name (no "Me" in them).
  */
-function guessWaOwner() {
+function ownerPool(source) {
+  return [...S.contacts.values()].filter((c) => c.s === source && !c.members.some(([n]) => isDefaultOwner(source, n)));
+}
+
+/**
+ * WhatsApp and (custom-named) iMessage exports don't mark which sender is you. A
+ * 1-on-1 chat is named after the other person, so its other sender is you (strong
+ * evidence); otherwise you're the sender who shows up in the most chats, then the
+ * one with the most messages.
+ */
+function guessOwner(source) {
   const score = new Map();
   const add = (name, n) => score.set(name, (score.get(name) || 0) + n);
-  for (const c of S.contacts.values()) {
-    if (c.s !== 2) continue;
+  for (const c of ownerPool(source)) {
     for (const [name, count] of c.members) add(name, 1 + count / 1e9);
     if (!c.group && c.members.length === 2 && c.members.some(([n]) => sameName(n, c.title))) {
       add(c.members.find(([n]) => !sameName(n, c.title))[0], 1000);
@@ -192,28 +216,34 @@ function guessWaOwner() {
   return [...score.entries()].sort((a, b) => b[1] - a[1]).map(([n]) => n)[0] || '';
 }
 
-/** Set sent/received on WhatsApp records from S.waOwner, and refresh the picker. */
-function applyWaOwner() {
-  const owner = S.waOwner;
-  for (const m of S.msgs) if (m.s === 2) m.o = m.sn === owner ? 1 : 0;
+/** Set sent/received on WhatsApp / iMessage records from S.owners, and rebuild the pickers. */
+function applyOwners() {
+  for (const m of S.msgs) if (hasOwner(m.s)) m.o = m.sn === S.owners[m.s].name || isDefaultOwner(m.s, m.sn) ? 1 : 0;
   for (const c of S.contacts.values()) c.search = contactSearchText(c);
   matchPeople();
 
-  const names = new Map();
-  for (const c of S.contacts.values()) {
-    if (c.s === 2) for (const [n, k] of c.members) names.set(n, (names.get(n) || 0) + k);
+  const box = $('#ownerFields');
+  box.innerHTML = '';
+  for (const source of Object.keys(S.owners).map(Number)) {
+    const names = new Map();
+    for (const c of ownerPool(source)) for (const [n, k] of c.members) names.set(n, (names.get(n) || 0) + k);
+    if (!names.size) continue; // nothing to pick, or every conversation names you "Me"
+    const owner = S.owners[source].name;
+    const field = document.createElement('label');
+    field.className = 'field';
+    field.title = `${SOURCES[source]} exports don't say which sender is you`;
+    field.innerHTML = `<span>You on ${SOURCES[source]}</span><select></select>`;
+    const sel = field.querySelector('select');
+    for (const [n] of [...names.entries()].sort((a, b) => b[1] - a[1])) sel.add(new Option(n, n));
+    sel.value = owner;
+    sel.onchange = () => setOwner(source, sel.value);
+    box.appendChild(field);
   }
-  $('#waOwnerField').hidden = !names.size;
-  const sel = $('#waOwnerSel');
-  sel.innerHTML = '';
-  for (const [n] of [...names.entries()].sort((a, b) => b[1] - a[1])) sel.add(new Option(n, n));
-  sel.value = owner;
 }
 
-function setWaOwner(name) {
-  S.waOwner = name;
-  S.waOwnerAuto = false;
-  applyWaOwner();
+function setOwner(source, name) {
+  S.owners[source] = { name, auto: false };
+  applyOwners();
   populateContacts();
   refresh();
 }
@@ -224,7 +254,7 @@ function setWaOwner(name) {
  * members' 1-on-1 keys, so members' names come from their own contacts.
  */
 function contactSearchText(c) {
-  const parts = [c.label, c.name, ...c.addr.split('~').filter((n) => c.s !== 2 || n !== S.waOwner)];
+  const parts = [c.label, c.name, ...c.addr.split('~').filter((n) => !hasOwner(c.s) || (n !== S.owners[c.s].name && !isDefaultOwner(c.s, n)))];
   if (c.group && !c.s) {
     for (const k of c.key.slice(2).split('~')) {
       const member = S.contacts.get(k);
@@ -608,7 +638,7 @@ function renderBrowser(msgs) {
     row.className = 'msg ' + (m.o ? 'sent' : 'recv');
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    const sender = !m.o && m.k.startsWith('g:') ? m.sn : '';
+    const sender = !m.o && m.k.startsWith('g:') ? formatAddr(m.sn) : '';
     if (showWho && (S.filter.contact === 'all' || sender)) {
       const who = document.createElement('div');
       who.className = 'who';
@@ -689,7 +719,6 @@ function init() {
   });
 
   $('#contactSel').onchange = (e) => setContact(e.target.value);
-  $('#waOwnerSel').onchange = (e) => setWaOwner(e.target.value);
   $('#sourceSeg').onclick = (e) => {
     const v = e.target.dataset.source;
     if (v) setSource(v === 'all' ? 'all' : +v);

@@ -3,9 +3,9 @@
  *
  * Message record (from parser.js / googlechat.js):
  *   t  epoch ms      o  1 = sent, 0 = received      m  1 = MMS, 0 = SMS
- *   s  source: 0 = SMS Backup & Restore, 1 = Google Chat, 2 = WhatsApp
- *   sn sender name (Google Chat: group messages you received; WhatsApp: every message)
- *   k  thread key ('g:' prefix = group chat; Google Chat keys contain 'gc:', WhatsApp 'wa:')
+ *   s  source: 0 = SMS Backup & Restore, 1 = Google Chat, 2 = WhatsApp, 3 = iMessage
+ *   sn sender name (Google Chat: group messages you received; WhatsApp / iMessage: every message)
+ *   k  thread key ('g:' prefix = group chat; Google Chat keys contain 'gc:', WhatsApp 'wa:', iMessage 'im:')
  *   b  text body                   l  length in characters
  *   wc word count    e  array of emoji or null      f  trait bit flags
  *   ph/gf/vd/au/ot   photo / gif / video / audio / other attachment counts

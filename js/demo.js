@@ -1,8 +1,8 @@
 /*
  * Synthetic demo backup. Builds a realistic-looking sms-*.xml and calls-*.xml in the
  * same format SMS Backup & Restore writes (including emoji as surrogate entities and
- * base64 attachment data), plus a Google Takeout Google Chat export and WhatsApp
- * chat exports, so the demo goes through the real parsers.
+ * base64 attachment data), plus a Google Takeout Google Chat export, WhatsApp
+ * chat exports and an imessage-exporter export, so the demo goes through the real parsers.
  */
 function buildDemoFiles() {
   let seed = 20240611;
@@ -168,6 +168,72 @@ function buildDemoFiles() {
     new File([calls], `calls-${stamp}.xml`, { type: 'text/xml' }),
     ...buildDemoChatZips(rand, pick, lines, startT, end.getTime(), stamp),
     ...buildDemoWhatsApp(rand, pick, lines, end.getTime()),
+    ...buildDemoIMessage(rand, pick, lines, end.getTime()),
+  ];
+}
+
+/*
+ * Synthetic imessage-exporter txt export (one file per conversation): a 1-on-1 and a
+ * named group ("<name> - <chat id>.txt"), with read receipts, tapbacks, threaded
+ * replies (indented under the original and repeated at the top level), edits,
+ * expressive effects, attachment paths and group announcements, plus orphaned.txt.
+ */
+function buildDemoIMessage(rand, pick, lines, endT) {
+  const DAY = 86400000;
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const pad = (n) => String(n).padStart(2, '0');
+  // chrono "%b %d, %Y %l:%M:%S %p"
+  const stamp = (t) => {
+    const d = new Date(t);
+    const h = d.getHours() % 12 || 12;
+    return `${MON[d.getMonth()]} ${pad(d.getDate())}, ${d.getFullYear()} ${String(h).padStart(2, ' ')}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${d.getHours() < 12 ? 'AM' : 'PM'}`;
+  };
+  let guid = 1;
+  const attachment = (t, kind) => {
+    const ext = { photo: 'HEIC', video: 'MOV', audio: 'caf' }[kind];
+    return `~/Library/Messages/Attachments/${pad(guid % 100)}/${pad(guid++ % 16)}/at_0_${(guid * 2654435761 >>> 0).toString(16).toUpperCase()}/IMG_${4000 + guid}.${ext}`;
+  };
+
+  function conversation(people, perDay, startT) {
+    const out = [];
+    for (let day = startT; day < endT; day += DAY) {
+      if (rand() > perDay) continue;
+      let t = day + (8 + Math.floor(rand() * 15)) * 3600e3 + Math.floor(rand() * 3600e3);
+      let sender = rand() < 0.5 ? 'Me' : pick(people);
+      for (let i = 0, n = 1 + Math.floor(rand() * rand() * 12); i < n; i++) {
+        const read = sender === 'Me' && rand() < 0.3 ? ` (Read by them after ${1 + Math.floor(rand() * 50)} minutes, ${Math.floor(rand() * 60)} seconds)` : '';
+        const body = [];
+        const roll = rand();
+        if (roll < 0.05) body.push(attachment(t, 'photo'));
+        else if (roll < 0.06) body.push(attachment(t, 'video'));
+        else if (roll < 0.065) body.push(attachment(t, 'audio'), 'Transcription: on my way, see you soon');
+        else if (roll < 0.07) body.push('Attachment missing!');
+        else if (roll < 0.08) body.push(`${stamp(t).slice(-11).trim()} ${pick(lines)}`, `Edited 12 seconds later: ${pick(lines)}`);
+        else body.push(...pick(lines).split('\n'));
+        if (rand() < 0.02) body.push('Sent with Confetti');
+        if (rand() < 0.12) body.push('Tapbacks:', `    ${pick(['Loved', 'Liked', 'Laughed at', 'Emphasized'])} by ${sender === 'Me' ? pick(people) : 'Me'}`);
+        out.push({ t, lines: [stamp(t) + read, sender, ...body] });
+        if (rand() < 0.4) sender = sender === 'Me' ? pick(people) : 'Me';
+        t += Math.floor((rand() < 0.8 ? rand() * 4 : 4 + rand() * 120) * 60000) + 1000;
+      }
+    }
+    // Thread replies: rendered indented under the original and again at the top level.
+    for (let i = 0; i + 3 < out.length; i += 37) {
+      const reply = out[i + 3];
+      reply.lines.push('This message responded to an earlier message.');
+      out[i].lines.push(...reply.lines.filter((l) => l !== 'This message responded to an earlier message.').map((l) => '    ' + l));
+    }
+    return out.map((m) => m.lines.join('\n') + '\n\n').join('');
+  }
+
+  const start = endT - 220 * DAY;
+  const riley = conversation(['Riley Chen'], 0.6, start);
+  const family = `${stamp(start)} Me named the conversation Family 🏡\n\n${stamp(start + 60e3)} Me added Mom to the conversation.\n\n` +
+    conversation(['Mom', 'Dad', '+15551230009'], 0.35, start + DAY);
+  return [
+    new File([riley], 'Riley Chen.txt', { type: 'text/plain' }),
+    new File([family], 'Family 🏡 - 7.txt', { type: 'text/plain' }),
+    new File([`${stamp(start)}\nMe\nmessage with no conversation\n\n`], 'orphaned.txt', { type: 'text/plain' }),
   ];
 }
 
