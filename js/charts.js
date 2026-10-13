@@ -532,7 +532,9 @@ function emojiOption(ui, A, limit = 20) {
     .sort((a, b) => b.t - a.t)
     .slice(0, limit);
   const opt = sentRecvStack(ui, rows.map((x) => x.e), rows.map((x) => x.s), rows.map((x) => x.r), { horizontal: true });
-  opt.yAxis.axisLabel = { fontSize: 17, color: ui.text, fontFamily: '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif' };
+  // Every row gets its emoji (ECharts would otherwise skip labels it thinks overlap),
+  // sized to fit 20 rows in the card.
+  opt.yAxis.axisLabel = { interval: 0, fontSize: 14, lineHeight: 16, color: ui.text, fontFamily: EMOJI_FONT };
   return { opt, empty: rows.length === 0 };
 }
 
