@@ -1,4 +1,6 @@
 # Yapalytics
+<img width="200" height="200" alt="logo" src="https://github.com/user-attachments/assets/aeddef68-a668-4885-8236-212975230a9f" />
+
 What your SMS, Google Chat, WhatsApp and iMessage messages reveal about you
 
 1. Export your messages:
