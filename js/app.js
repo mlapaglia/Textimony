@@ -9,6 +9,8 @@ const S = {
   files: [],
   filter: { contact: 'all', source: 'all', groups: true, people: [], from: null, to: null },
   peopleKeys: null, // Set of thread keys matching filter.people, or null when not filtering
+  waOwner: '', // your sender name in WhatsApp exports
+  waOwnerAuto: true, // false once picked by hand
   gran: 'auto',
   activeGran: 'month',
   calYear: null,
@@ -24,7 +26,18 @@ const $$ = (sel) => [...document.querySelectorAll(sel)];
 
 // ------------------------------------------------------------------ loading
 
+const SOURCES = { 0: 'SMS', 1: 'Google Chat', 2: 'WhatsApp' };
 const isZip = (f) => /\.zip$/i.test(f.name) || /zip/.test(f.type);
+
+/** 'sms' | 'gchat' | 'whatsapp', from the extension or (for zips) what's inside. */
+async function fileKind(f) {
+  if (/\.txt$/i.test(f.name)) return 'whatsapp';
+  if (!isZip(f)) return 'sms';
+  const names = (await zipLib().listZip(f)).map((e) => e.name);
+  if (names.some((n) => /(?:^|\/)Google Chat\//.test(n))) return 'gchat';
+  if (names.some((n) => /\.txt$/i.test(n))) return 'whatsapp';
+  throw new Error(`${f.name} isn't a Google Takeout export of Google Chat or a WhatsApp chat export`);
+}
 
 async function loadFiles(fileList) {
   const files = [...fileList].filter((f) => f.size > 0);
@@ -36,22 +49,29 @@ async function loadFiles(fileList) {
   const bar = $('#progressBar');
   const text = $('#progressText');
 
-  // Each SMS backup is parsed on its own; all Takeout zips go together because a
-  // split export spreads one conversation across parts.
-  const zips = files.filter(isZip);
-  const jobs = files.filter((f) => !isZip(f)).map((f) => ({ files: [f], parse: (cb) => parseBackupFile(f, cb) }));
-  if (zips.length) jobs.push({ files: zips, parse: (cb) => parseGoogleChatZips(zips, cb) });
-  let badDates = 0;
+  let chatBadDates = 0;
 
   try {
+    // Each SMS backup is parsed on its own; all Takeout zips go together because a
+    // split export spreads one conversation across parts, and all WhatsApp exports
+    // go together so their date formats can be worked out from each other.
+    const kinds = await Promise.all(files.map(fileKind));
+    const of = (kind) => files.filter((f, i) => kinds[i] === kind);
+    const jobs = of('sms').map((f) => ({ files: [f], parse: (cb) => parseBackupFile(f, cb) }));
+    const gchat = of('gchat');
+    if (gchat.length) jobs.push({ files: gchat, gchat: true, parse: (cb) => parseGoogleChatZips(gchat, cb) });
+    const wa = of('whatsapp');
+    if (wa.length) jobs.push({ files: wa, parse: (cb) => parseWhatsAppFiles(wa, cb) });
+
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i];
-      const label = job.files.length > 1 ? `${job.files.length} zip files` : job.files[0].name;
+      const label = job.files.length > 1 ? `${job.files.length} files` : job.files[0].name;
       const before = S.msgs.length + S.calls.length;
       const done = await job.parse({
         onBatch(msgs, calls) {
           for (const m of msgs) {
-            const key = `${m.t}|${m.o}|${m.k}|${m.l}|${m.m}`;
+            // WhatsApp records get `o` later (see applyWaOwner), so key them by sender.
+            const key = `${m.t}|${m.s === 2 ? m.sn : m.o}|${m.k}|${m.l}|${m.m}`;
             if (S.seenMsgs.has(key)) continue;
             S.seenMsgs.add(key);
             S.msgs.push(m);
@@ -75,9 +95,15 @@ async function loadFiles(fileList) {
         else {
           if (c.name && c.lastT >= cur.lastT) { cur.name = c.name; cur.lastT = c.lastT; }
           if (!cur.addr) cur.addr = c.addr;
+          if (c.members) {
+            const all = new Map(cur.members);
+            for (const [n, k] of c.members) all.set(n, Math.max(all.get(n) || 0, k));
+            cur.members = [...all];
+            cur.addr = [...all.keys()].join('~');
+          }
         }
       }
-      badDates += done.counts.badDates || 0;
+      if (job.gchat) chatBadDates += done.counts.badDates || 0;
       const added = S.msgs.length + S.calls.length - before;
       for (const f of job.files) S.files.push({ name: f.name, size: f.size, added });
     }
@@ -88,17 +114,17 @@ async function loadFiles(fileList) {
   }
 
   if (!S.msgs.length && !S.calls.length) {
-    showLoadError(badDates
+    showLoadError(chatBadDates
       ? 'The Google Chat dates are in a language this app can\'t read yet. Set your Google account language to English, export again, and retry.'
-      : 'No messages or calls were found. Use an XML backup from SMS Backup & Restore (sms-*.xml or calls-*.xml) or a Google Takeout zip that includes Google Chat.');
+      : 'No messages or calls were found. Use an XML backup from SMS Backup & Restore (sms-*.xml or calls-*.xml), a Google Takeout zip that includes Google Chat, or a WhatsApp chat export (.txt or .zip).');
     return;
   }
 
   S.msgs.sort((a, b) => a.t - b.t);
   S.calls.sort((a, b) => a.t - b.t);
   for (const c of S.contacts.values()) c.label = contactLabel(c);
-  for (const c of S.contacts.values()) c.search = contactSearchText(c);
-  matchPeople();
+  if (S.waOwnerAuto) S.waOwner = guessWaOwner();
+  applyWaOwner();
   $('#landing').hidden = true;
   $('#dash').hidden = false;
   populateContacts();
@@ -126,7 +152,7 @@ function formatAddr(a) {
 }
 
 function contactLabel(c) {
-  const chat = c.s === 1 ? '💬' : '';
+  const chat = { 1: '💬', 2: '🟢' }[c.s] || '';
   if (c.group) {
     if (c.name) return chat + '👥 ' + c.name;
     return chat + '👥 ' + c.addr.split('~').map(formatAddr).join(', ');
@@ -134,20 +160,62 @@ function contactLabel(c) {
   return (chat ? chat + ' ' : '') + (c.name || formatAddr(c.addr) || c.key);
 }
 
-/** Message source of a thread key: 1 = Google Chat, 0 = SMS. */
+/** Message source of a thread key: 0 = SMS, 1 = Google Chat, 2 = WhatsApp. */
 function keySource(key) {
   const c = S.contacts.get(key);
-  return c && c.s === 1 ? 1 : 0;
+  return (c && c.s) || 0;
 }
 
-function hasBothSources() {
-  let sms = false, chat = false;
+function loadedSources() {
+  return new Set([...S.contacts.values()].map((c) => c.s || 0));
+}
+
+// ------------------------------------------------------------------ WhatsApp owner
+
+const sameName = (a, b) => a.replace(/[\s~]/g, '').toLowerCase() === b.replace(/[\s~]/g, '').toLowerCase();
+
+/**
+ * WhatsApp exports don't mark which sender is you. A 1-on-1 chat is named after the
+ * other person, so its other sender is you (strong evidence); otherwise you're the
+ * sender who shows up in the most chats, then the one with the most messages.
+ */
+function guessWaOwner() {
+  const score = new Map();
+  const add = (name, n) => score.set(name, (score.get(name) || 0) + n);
   for (const c of S.contacts.values()) {
-    if (c.s === 1) chat = true;
-    else sms = true;
-    if (sms && chat) return true;
+    if (c.s !== 2) continue;
+    for (const [name, count] of c.members) add(name, 1 + count / 1e9);
+    if (!c.group && c.members.length === 2 && c.members.some(([n]) => sameName(n, c.title))) {
+      add(c.members.find(([n]) => !sameName(n, c.title))[0], 1000);
+    }
   }
-  return false;
+  return [...score.entries()].sort((a, b) => b[1] - a[1]).map(([n]) => n)[0] || '';
+}
+
+/** Set sent/received on WhatsApp records from S.waOwner, and refresh the picker. */
+function applyWaOwner() {
+  const owner = S.waOwner;
+  for (const m of S.msgs) if (m.s === 2) m.o = m.sn === owner ? 1 : 0;
+  for (const c of S.contacts.values()) c.search = contactSearchText(c);
+  matchPeople();
+
+  const names = new Map();
+  for (const c of S.contacts.values()) {
+    if (c.s === 2) for (const [n, k] of c.members) names.set(n, (names.get(n) || 0) + k);
+  }
+  $('#waOwnerField').hidden = !names.size;
+  const sel = $('#waOwnerSel');
+  sel.innerHTML = '';
+  for (const [n] of [...names.entries()].sort((a, b) => b[1] - a[1])) sel.add(new Option(n, n));
+  sel.value = owner;
+}
+
+function setWaOwner(name) {
+  S.waOwner = name;
+  S.waOwnerAuto = false;
+  applyWaOwner();
+  populateContacts();
+  refresh();
 }
 
 /**
@@ -156,8 +224,8 @@ function hasBothSources() {
  * members' 1-on-1 keys, so members' names come from their own contacts.
  */
 function contactSearchText(c) {
-  const parts = [c.label, c.name, ...c.addr.split('~')];
-  if (c.group && c.key.startsWith('g:') && !c.key.startsWith('g:gc:')) {
+  const parts = [c.label, c.name, ...c.addr.split('~').filter((n) => c.s !== 2 || n !== S.waOwner)];
+  if (c.group && !c.s) {
     for (const k of c.key.slice(2).split('~')) {
       const member = S.contacts.get(k);
       if (member) parts.push(member.name, member.addr);
@@ -217,8 +285,12 @@ function populateContacts() {
     sel.add(new Option(`${labelFor(k)} (${parts.join(', ')})`, k));
   }
   sel.value = S.filter.contact;
-  $('#sourceSeg').hidden = !hasBothSources();
-  $$('#sourceSeg button').forEach((b) => b.classList.toggle('on', b.dataset.source === String(source)));
+  const present = loadedSources();
+  $('#sourceSeg').hidden = present.size < 2;
+  $$('#sourceSeg button').forEach((b) => {
+    b.hidden = b.dataset.source !== 'all' && !present.has(+b.dataset.source);
+    b.classList.toggle('on', b.dataset.source === String(source));
+  });
   $('#fileInfo').textContent = S.files.map((f) => f.name).join(', ');
 }
 
@@ -241,7 +313,7 @@ function baseMessages() {
 
 function baseCalls() {
   const { contact, source } = S.filter;
-  if (source === 1) return []; // calls only come from SMS Backup & Restore
+  if (source !== 'all' && source !== 0) return []; // calls only come from SMS Backup & Restore
   if (contact !== 'all') return S.calls.filter((c) => c.k === contact);
   if (S.peopleKeys) return S.calls.filter((c) => S.peopleKeys.has(c.k));
   return S.calls;
@@ -364,7 +436,7 @@ function refresh({ timeline = true } = {}) {
 }
 
 function renderScope(n) {
-  const src = { all: '', 0: ' (SMS)', 1: ' (Google Chat)' }[S.filter.source];
+  const src = S.filter.source === 'all' ? '' : ` (${SOURCES[S.filter.source]})`;
   const { people, groups } = S.filter;
   const all = people.length
     ? `${groups ? 'Conversations' : '1-on-1 conversations'} with ${people.map((p) => `“${p}”`).join(' or ')}`
@@ -536,11 +608,12 @@ function renderBrowser(msgs) {
     row.className = 'msg ' + (m.o ? 'sent' : 'recv');
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    if (showWho && (S.filter.contact === 'all' || m.sn)) {
+    const sender = !m.o && m.k.startsWith('g:') ? m.sn : '';
+    if (showWho && (S.filter.contact === 'all' || sender)) {
       const who = document.createElement('div');
       who.className = 'who';
-      if (S.filter.contact !== 'all') who.textContent = m.sn;
-      else if (m.sn) who.textContent = `${m.sn} · ${labelFor(m.k)}`;
+      if (S.filter.contact !== 'all') who.textContent = sender;
+      else if (sender) who.textContent = `${sender} · ${labelFor(m.k)}`;
       else who.textContent = (m.o ? 'To ' : 'From ') + labelFor(m.k);
       bubble.appendChild(who);
     }
@@ -616,6 +689,7 @@ function init() {
   });
 
   $('#contactSel').onchange = (e) => setContact(e.target.value);
+  $('#waOwnerSel').onchange = (e) => setWaOwner(e.target.value);
   $('#sourceSeg').onclick = (e) => {
     const v = e.target.dataset.source;
     if (v) setSource(v === 'all' ? 'all' : +v);

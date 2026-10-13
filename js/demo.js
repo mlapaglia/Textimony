@@ -1,8 +1,8 @@
 /*
  * Synthetic demo backup. Builds a realistic-looking sms-*.xml and calls-*.xml in the
  * same format SMS Backup & Restore writes (including emoji as surrogate entities and
- * base64 attachment data), plus a Google Takeout Google Chat export, so the demo goes
- * through the real parsers.
+ * base64 attachment data), plus a Google Takeout Google Chat export and WhatsApp
+ * chat exports, so the demo goes through the real parsers.
  */
 function buildDemoFiles() {
   let seed = 20240611;
@@ -167,6 +167,80 @@ function buildDemoFiles() {
     new File([sms], `sms-${stamp}.xml`, { type: 'text/xml' }),
     new File([calls], `calls-${stamp}.xml`, { type: 'text/xml' }),
     ...buildDemoChatZips(rand, pick, lines, startT, end.getTime(), stamp),
+    ...buildDemoWhatsApp(rand, pick, lines, end.getTime()),
+  ];
+}
+
+/*
+ * Synthetic WhatsApp exports in both phone formats: an Android 1-on-1 .txt
+ * (M/D/YY, 12-hour clock with U+202F, " - " separator, "<Media omitted>") and an
+ * iOS group .zip (_chat.txt with [DD/MM/YYYY, HH:MM:SS], U+200E-marked system lines
+ * and "<attached: …>" media stored next to it).
+ */
+function buildDemoWhatsApp(rand, pick, lines, endT) {
+  const me = 'Jamie Park';
+  const DAY = 86400000;
+  const pad = (n) => String(n).padStart(2, '0');
+  const androidStamp = (t) => {
+    const d = new Date(t);
+    const h = d.getHours();
+    return `${d.getMonth() + 1}/${d.getDate()}/${pad(d.getFullYear() % 100)}, ${h % 12 || 12}:${pad(d.getMinutes())}\u202f${h < 12 ? 'AM' : 'PM'}`;
+  };
+  const iosStamp = (t) => {
+    const d = new Date(t);
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}, ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  };
+  const extra = ['running late, save me a seat', 'did you finish the book??', 'chapter 12 was wild\nno spoilers but WOW', 'can someone send the address', 'voice note incoming', 'lol same'];
+
+  // Android 1-on-1 with Nadia
+  const a = [`${androidStamp(endT - 400 * DAY)} - Messages and calls are end-to-end encrypted. No one outside of this chat, not even WhatsApp, can read or listen to them. Tap to learn more.`];
+  for (let day = endT - 400 * DAY; day < endT; day += DAY) {
+    if (rand() > 0.55) continue;
+    let t = day + (9 + Math.floor(rand() * 13)) * 3600e3 + Math.floor(rand() * 3600e3);
+    let sender = rand() < 0.5 ? me : 'Nadia Haddad';
+    for (let i = 0, n = 1 + Math.floor(rand() * rand() * 10); i < n; i++) {
+      const roll = rand();
+      const body = roll < 0.05 ? '<Media omitted>' : roll < 0.06 ? 'This message was deleted' : roll < 0.08 ? pick(lines) + ' <This message was edited>' : pick(rand() < 0.2 ? extra : lines);
+      a.push(`${androidStamp(t)} - ${sender}: ${body}`);
+      if (rand() < 0.4) sender = sender === me ? 'Nadia Haddad' : me;
+      t += Math.floor((rand() < 0.8 ? rand() * 3 : 3 + rand() * 120) * 60000);
+    }
+  }
+
+  // iOS group chat, exported "with media"
+  const group = 'Book Club 📚';
+  const members = [me, 'Nadia Haddad', 'Omar Farouk', '~ Lena'];
+  const start = endT - 300 * DAY;
+  const g = [
+    `\u200e[${iosStamp(start)}] ${group}: \u200eMessages and calls are end-to-end encrypted. No one outside of this chat, not even WhatsApp, can read or listen to them.`,
+    `\u200e[${iosStamp(start + 1000)}] ${group}: \u200eOmar Farouk created group “${group}”`,
+    `\u200e[${iosStamp(start + 2000)}] ${group}: \u200eOmar Farouk added you`,
+  ];
+  const media = [];
+  let photo = 1;
+  for (let day = start + DAY; day < endT; day += DAY) {
+    if (rand() > 0.3) continue;
+    let t = day + (17 + Math.floor(rand() * 6)) * 3600e3 + Math.floor(rand() * 3600e3);
+    for (let i = 0, n = 2 + Math.floor(rand() * rand() * 15); i < n; i++) {
+      const sender = pick(members);
+      if (rand() < 0.06) {
+        const d = new Date(t);
+        const name = `${String(photo++).padStart(8, '0')}-PHOTO-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}.jpg`;
+        const bytes = new Uint8Array(2000 + Math.floor(rand() * 6000));
+        media.push([name, bytes]);
+        g.push(`[${iosStamp(t)}] ${sender}: \u200e<attached: ${name}>`);
+      } else if (rand() < 0.02) {
+        g.push(`\u200e[${iosStamp(t)}] ${sender}: \u200eMissed voice call`);
+      } else {
+        g.push(`[${iosStamp(t)}] ${sender}: ${pick(rand() < 0.3 ? extra : lines)}`);
+      }
+      t += Math.floor((rand() < 0.75 ? rand() * 4 : 4 + rand() * 60) * 60000) + 1000;
+    }
+  }
+
+  return [
+    new File([a.join('\n') + '\n'], 'WhatsApp Chat with Nadia Haddad.txt', { type: 'text/plain' }),
+    new File([buildStoredZip([['_chat.txt', g.join('\r\n') + '\r\n'], ...media])], `WhatsApp Chat - ${group}.zip`, { type: 'application/zip' }),
   ];
 }
 

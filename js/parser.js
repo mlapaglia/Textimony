@@ -407,7 +407,8 @@ function smsParserWorker(self, lib) {
  */
 function runParserWorker(workerFn, payload, { onBatch, onProgress }) {
   return new Promise((resolve, reject) => {
-    const src = '(' + workerFn.toString() + ')(self, (' + messageLib.toString() + ')());';
+    const lib = `Object.assign((${messageLib})(), (${zipLib})())`;
+    const src = `(${workerFn})(self, ${lib});`;
     const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
     const worker = new Worker(url);
     worker.onmessage = (e) => {
