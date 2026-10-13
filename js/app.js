@@ -792,7 +792,7 @@ function drawWrapped(canvas, W, ui) {
     text(value, x + 20, y + 76, 34, { weight: 800, max: 250 });
     text(sub, x + 20, y + 104, 19, { color: soft, max: 250 });
   });
-  text('Textimony', w - 80, h - 24, 22, { weight: 600, color: 'rgba(255,255,255,0.45)', align: 'right' });
+  text('Yapalytics', w - 80, h - 24, 22, { weight: 600, color: 'rgba(255,255,255,0.45)', align: 'right' });
 }
 
 function renderWrapped(ui, base) {
@@ -816,7 +816,7 @@ function saveWrapped() {
     if (!blob) return;
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `textimony-${S.wrapYear}.png`;
+    a.download = `Yapalytics-${S.wrapYear}.png`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }, 'image/png');
