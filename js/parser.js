@@ -1,4 +1,66 @@
 /*
+ * Text analysis and time stamping shared by every parser worker. Like the workers,
+ * it is serialized into the worker source, so it must be self-contained.
+ */
+function messageLib() {
+  'use strict';
+
+  // Emoji: flags, keycaps, and pictographs with optional variation selector,
+  // skin tone and ZWJ sequences (👩‍👩‍👧 counts once).
+  const EMOJI_RE = /\p{RI}\p{RI}|[#*0-9]️?⃣|\p{Extended_Pictographic}(?:️|\p{EMod})?(?:‍\p{Extended_Pictographic}(?:️|\p{EMod})?)*/gu;
+  const NOT_EMOJI = new Set(['©', '®', '™']);
+  const WORD_RE = /[\p{L}\p{N}']+/gu;
+  const LINK_RE = /https?:\/\/|www\.[a-z0-9-]+\./i;
+  const LAUGH_RE = /\b(?:lol+|lmf?ao+|rofl|(?:ha){2,}h?|(?:he){2,}|(?:ja){2,})\b|😂|🤣|😆|💀/iu;
+  const LOVE_RE = /\b(?:love (?:you|u|ya)|luv (?:you|u)|ily|xoxo)\b|❤|😍|🥰|😘|💕|💗|💖/iu;
+  const REACTION_RE = /^(?:(?:Liked|Loved|Disliked|Laughed at|Emphasized|Questioned|Reacted .{1,12} to|Removed .{1,40} from) [“"]|[^\p{L}\p{N}\s]{1,8} to [“"].*[”"]$)/u;
+  const UPPER_RE = /\p{Lu}/u;
+  const LOWER_RE = /\p{Ll}/u;
+
+  // Trait bit flags (kept in sync with analysis.js)
+  const T_QUESTION = 1, T_LINK = 2, T_LAUGH = 4, T_CAPS = 8, T_REACTION = 16, T_LOVE = 32;
+
+  function analyzeText(body, rec) {
+    rec.b = body;
+    if (!body) { rec.l = 0; rec.wc = 0; rec.e = null; rec.f = 0; return; }
+    let len = 0;
+    for (const _ of body) len++;
+    rec.l = len;
+    const words = body.match(WORD_RE);
+    rec.wc = words ? words.length : 0;
+    let emo = body.match(EMOJI_RE);
+    if (emo) {
+      emo = emo.filter((x) => !NOT_EMOJI.has(x) && !/^[#*0-9]$/.test(x));
+      if (!emo.length) emo = null;
+    }
+    rec.e = emo;
+    let f = 0;
+    if (REACTION_RE.test(body)) f |= T_REACTION;
+    else {
+      if (body.indexOf('?') >= 0) f |= T_QUESTION;
+      if (LINK_RE.test(body)) f |= T_LINK;
+      if (LAUGH_RE.test(body)) f |= T_LAUGH;
+      if (LOVE_RE.test(body)) f |= T_LOVE;
+      if (len >= 4 && UPPER_RE.test(body) && !LOWER_RE.test(body)) {
+        const letters = body.match(/\p{L}/gu);
+        if (letters && letters.length >= 4) f |= T_CAPS;
+      }
+    }
+    rec.f = f;
+  }
+
+  function stampTime(rec) {
+    const dt = new Date(rec.t);
+    rec.h = dt.getHours();
+    rec.w = dt.getDay();
+    rec.d = Math.floor((rec.t - dt.getTimezoneOffset() * 60000) / 86400000); // local day number
+    rec.mo = dt.getFullYear() * 12 + dt.getMonth();
+  }
+
+  return { analyzeText, stampTime, T_REACTION };
+}
+
+/*
  * Streaming parser for SMS Backup & Restore XML files (sms-*.xml and calls-*.xml).
  *
  * The whole function below is serialized into a Blob and run as a Web Worker, so it
@@ -9,8 +71,10 @@
  * attributes. The scanner never buffers those: it skips over them and only records
  * their length, so memory stays proportional to the text content.
  */
-function smsParserWorker(self) {
+function smsParserWorker(self, lib) {
   'use strict';
+
+  const { analyzeText, stampTime } = lib;
 
   const CHUNK_BYTES = 8 * 1024 * 1024;
   const BATCH_SIZE = 5000;
@@ -191,58 +255,6 @@ function smsParserWorker(self) {
     if (!c.addr && address) c.addr = address;
   }
 
-  // Emoji: flags, keycaps, and pictographs with optional variation selector,
-  // skin tone and ZWJ sequences (👩‍👩‍👧 counts once).
-  const EMOJI_RE = /\p{RI}\p{RI}|[#*0-9]️?⃣|\p{Extended_Pictographic}(?:️|\p{EMod})?(?:‍\p{Extended_Pictographic}(?:️|\p{EMod})?)*/gu;
-  const NOT_EMOJI = new Set(['©', '®', '™']);
-  const WORD_RE = /[\p{L}\p{N}']+/gu;
-  const LINK_RE = /https?:\/\/|www\.[a-z0-9-]+\./i;
-  const LAUGH_RE = /\b(?:lol+|lmf?ao+|rofl|(?:ha){2,}h?|(?:he){2,}|(?:ja){2,})\b|😂|🤣|😆|💀/iu;
-  const LOVE_RE = /\b(?:love (?:you|u|ya)|luv (?:you|u)|ily|xoxo)\b|❤|😍|🥰|😘|💕|💗|💖/iu;
-  const REACTION_RE = /^(?:(?:Liked|Loved|Disliked|Laughed at|Emphasized|Questioned|Reacted .{1,12} to|Removed .{1,40} from) [“"]|[^\p{L}\p{N}\s]{1,8} to [“"].*[”"]$)/u;
-  const UPPER_RE = /\p{Lu}/u;
-  const LOWER_RE = /\p{Ll}/u;
-
-  // Trait bit flags (kept in sync with analysis.js)
-  const T_QUESTION = 1, T_LINK = 2, T_LAUGH = 4, T_CAPS = 8, T_REACTION = 16, T_LOVE = 32;
-
-  function analyzeText(body, rec) {
-    rec.b = body;
-    if (!body) { rec.l = 0; rec.wc = 0; rec.e = null; rec.f = 0; return; }
-    let len = 0;
-    for (const _ of body) len++;
-    rec.l = len;
-    const words = body.match(WORD_RE);
-    rec.wc = words ? words.length : 0;
-    let emo = body.match(EMOJI_RE);
-    if (emo) {
-      emo = emo.filter((x) => !NOT_EMOJI.has(x) && !/^[#*0-9]$/.test(x));
-      if (!emo.length) emo = null;
-    }
-    rec.e = emo;
-    let f = 0;
-    if (REACTION_RE.test(body)) f |= T_REACTION;
-    else {
-      if (body.indexOf('?') >= 0) f |= T_QUESTION;
-      if (LINK_RE.test(body)) f |= T_LINK;
-      if (LAUGH_RE.test(body)) f |= T_LAUGH;
-      if (LOVE_RE.test(body)) f |= T_LOVE;
-      if (len >= 4 && UPPER_RE.test(body) && !LOWER_RE.test(body)) {
-        const letters = body.match(/\p{L}/gu);
-        if (letters && letters.length >= 4) f |= T_CAPS;
-      }
-    }
-    rec.f = f;
-  }
-
-  function stampTime(rec) {
-    const dt = new Date(rec.t);
-    rec.h = dt.getHours();
-    rec.w = dt.getDay();
-    rec.d = Math.floor((rec.t - dt.getTimezoneOffset() * 60000) / 86400000); // local day number
-    rec.mo = dt.getFullYear() * 12 + dt.getMonth();
-  }
-
   function toMillis(v) {
     let t = +v;
     if (!t) return 0;
@@ -273,7 +285,7 @@ function smsParserWorker(self) {
     if ((type !== 1 && type !== 2) || !t) { counts.skipped++; return; }
     const k = threadKey(a.address);
     noteContact(k, a.address, a.contact_name, t);
-    const rec = { t, o: type === 2 ? 1 : 0, m: 0, k, ph: 0, gf: 0, vd: 0, au: 0, ot: 0, mb: 0 };
+    const rec = { t, o: type === 2 ? 1 : 0, m: 0, s: 0, k, ph: 0, gf: 0, vd: 0, au: 0, ot: 0, mb: 0 };
     analyzeText(a.body == null ? '' : a.body, rec);
     stampTime(rec);
     counts.sms++;
@@ -310,7 +322,7 @@ function smsParserWorker(self) {
     const k = threadKey(address);
     noteContact(k, address, a.contact_name, t);
 
-    const rec = { t, o: box === 2 ? 1 : 0, m: 1, k, ph: 0, gf: 0, vd: 0, au: 0, ot: 0, mb: 0 };
+    const rec = { t, o: box === 2 ? 1 : 0, m: 1, s: 0, k, ph: 0, gf: 0, vd: 0, au: 0, ot: 0, mb: 0 };
     const parts = m.parts.slice().sort((x, y) => (+x.seq || 0) - (+y.seq || 0));
     const texts = [];
     for (const p of parts) {
@@ -389,10 +401,13 @@ function smsParserWorker(self) {
   };
 }
 
-/** Parse one File in a fresh worker. Callbacks: onBatch(msgs, calls), onProgress(loaded, total). */
-function parseBackupFile(file, { onBatch, onProgress }) {
+/**
+ * Run a parser worker over `payload`. Callbacks: onBatch(msgs, calls), onProgress(loaded, total).
+ * Resolves with the worker's final { type:'done', contacts, counts } message.
+ */
+function runParserWorker(workerFn, payload, { onBatch, onProgress }) {
   return new Promise((resolve, reject) => {
-    const src = '(' + smsParserWorker.toString() + ')(self);';
+    const src = '(' + workerFn.toString() + ')(self, (' + messageLib.toString() + ')());';
     const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
     const worker = new Worker(url);
     worker.onmessage = (e) => {
@@ -411,6 +426,11 @@ function parseBackupFile(file, { onBatch, onProgress }) {
       URL.revokeObjectURL(url);
       reject(new Error(e.message || 'Worker failed'));
     };
-    worker.postMessage({ file });
+    worker.postMessage(payload);
   });
+}
+
+/** Parse one SMS Backup & Restore XML file in a fresh worker. */
+function parseBackupFile(file, callbacks) {
+  return runParserWorker(smsParserWorker, { file }, callbacks);
 }

@@ -1,7 +1,8 @@
 /*
  * Synthetic demo backup. Builds a realistic-looking sms-*.xml and calls-*.xml in the
  * same format SMS Backup & Restore writes (including emoji as surrogate entities and
- * base64 attachment data), so the demo goes through the real parser.
+ * base64 attachment data), plus a Google Takeout Google Chat export, so the demo goes
+ * through the real parsers.
  */
 function buildDemoFiles() {
   let seed = 20240611;
@@ -165,5 +166,151 @@ function buildDemoFiles() {
   return [
     new File([sms], `sms-${stamp}.xml`, { type: 'text/xml' }),
     new File([calls], `calls-${stamp}.xml`, { type: 'text/xml' }),
+    ...buildDemoChatZips(rand, pick, lines, startT, end.getTime(), stamp),
   ];
+}
+
+/*
+ * Synthetic Google Takeout export of Google Chat, split over two zips the way a large
+ * export is (the second part holds attachments and one group_info.json), with the
+ * real quirks: U+202F before AM/PM, repeated attachment names stored as "name(1).ext",
+ * a deleted message stub and an unsentmessages.json to ignore.
+ */
+function buildDemoChatZips(rand, pick, lines, startT, endT, stamp) {
+  const me = { name: 'You', email: 'you@example.com', user_type: 'Human' };
+  const people = {
+    priya: { name: 'Priya Shah', email: 'priya.shah@example.com', user_type: 'Human' },
+    ben: { name: 'Ben Okafor', email: 'ben.okafor@example.com', user_type: 'Human' },
+    lena: { name: 'Lena Fischer', email: 'lena.f@example.com', user_type: 'Human' },
+  };
+  const convos = [
+    { dir: 'DM 8uTneoAAAAE', members: [me, people.priya], perDay: 0.9 },
+    { dir: 'DM 2kQpzlAAAAE', members: [me, people.ben], perDay: 0.35 },
+    { dir: 'DM 7rWvcbAAAAE', members: [me, people.priya, people.lena], perDay: 0.15 },
+    { dir: 'Space AAAA1SQJ1zo', name: 'Weekend Hikers', members: [me, people.priya, people.ben, people.lena], perDay: 0.45 },
+  ];
+  const chatLines = [...lines.filter((l) => !/^(Liked|Loved|Laughed)/.test(l)), 'pushed the fix, can you take a look?', 'trail map attached', 'who is driving saturday?', 'in a meeting, will reply after'];
+
+  const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const chatDate = (t) => {
+    const d = new Date(t);
+    const h = d.getUTCHours();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${WEEKDAYS[d.getUTCDay()]}, ${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()} at ${h % 12 || 12}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}\u202f${h < 12 ? 'AM' : 'PM'} UTC`;
+  };
+  const randomBytes = (n) => {
+    const b = new Uint8Array(n);
+    for (let i = 0; i < n; i++) b[i] = (rand() * 256) | 0;
+    return b;
+  };
+
+  const root = 'Takeout/Google Chat/';
+  const part1 = [];
+  const part2 = [];
+  const json = (o) => JSON.stringify(o, null, 2);
+  part1.push([root + 'Users/User 111790196300230307452/user_info.json', json({
+    user: me,
+    membership_info: convos.map((c) => ({ group_id: c.dir, ...(c.name ? { group_name: c.name } : {}), membership_state: 'MEMBER_JOINED' })),
+  })]);
+  part1.push([root + 'Users/User 111790196300230307452/unsentmessages.json', json({ messages: [{ creator: me, created_date: chatDate(endT - 3600e3), text: 'draft I never sent' }] })]);
+
+  const DAY = 86400000;
+  const chatStart = Math.max(startT, endT - 540 * DAY);
+  for (const c of convos) {
+    const groupId = c.dir.slice(c.dir.indexOf(' ') + 1);
+    const messages = [];
+    const used = new Map();
+    for (let day = chatStart; day < endT; day += DAY) {
+      if (rand() > c.perDay) continue;
+      // Chat clusters in daytime hours.
+      let t = day + Math.min(23, 8 + Math.floor(rand() * rand() * 14)) * 3600e3 + Math.floor(rand() * 3600e3);
+      const topic = rand().toString(36).slice(2, 13);
+      const n = 1 + Math.floor(rand() * rand() * 12);
+      let sender = rand() < 0.5 ? me : pick(c.members.slice(1));
+      for (let i = 0; i < n; i++) {
+        const msg = { creator: sender, created_date: chatDate(t) };
+        if (rand() < 0.9) msg.text = pick(chatLines);
+        if (!msg.text || rand() < 0.05) {
+          const name = rand() < 0.6 ? 'image.png' : pick(['trail.jpg', 'clip.mp4', 'notes.pdf', 'party.gif']);
+          const export_name = 'File-' + name;
+          const nth = used.get(export_name) || 0;
+          used.set(export_name, nth + 1);
+          const dot = export_name.lastIndexOf('.');
+          const disk = nth ? `${export_name.slice(0, dot)}(${nth})${export_name.slice(dot)}` : export_name;
+          part2.push([`${root}Groups/${c.dir}/${disk}`, randomBytes(800 + Math.floor(rand() * 4000))]);
+          msg.attached_files = [{ original_name: name, export_name }];
+        }
+        msg.topic_id = topic;
+        msg.message_id = `${groupId}/${topic}/${rand().toString(36).slice(2, 13)}`;
+        if (rand() < 0.08) msg.reactions = [{ emoji: { unicode: '👍' }, reactor_emails: [pick(c.members).email] }];
+        messages.push(msg);
+        if (rand() < 0.01) messages.push({ message_state: 'DELETED', deleted_date: chatDate(t + 1000), topic_id: topic, deletion_metadata: { deletion_type: 'CREATOR' }, message_id: `${groupId}/${topic}/deleted${i}` });
+        sender = rand() < 0.35 ? sender : sender === me ? pick(c.members.slice(1)) : me;
+        t += Math.floor((rand() < 0.8 ? rand() * 5 : 5 + rand() * 90) * 60000) + 1000;
+      }
+    }
+    const info = json({ ...(c.name ? { name: c.name } : {}), members: c.members });
+    (c.name ? part2 : part1).push([`${root}Groups/${c.dir}/group_info.json`, info]);
+    part1.push([`${root}Groups/${c.dir}/messages.json`, json({ messages })]);
+  }
+
+  const name = (n) => `takeout-${stamp.slice(0, 8)}T${stamp.slice(8)}Z-1-00${n}.zip`;
+  return [
+    new File([buildStoredZip(part1)], name(1), { type: 'application/zip' }),
+    new File([buildStoredZip(part2)], name(2), { type: 'application/zip' }),
+  ];
+}
+
+/** Minimal zip writer (no compression) for the demo export. entries: [[path, string | Uint8Array]]. */
+function buildStoredZip(entries) {
+  const enc = new TextEncoder();
+  const crcTable = new Uint32Array(256).map((_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c;
+  });
+  const crc32 = (b) => {
+    let c = 0xffffffff;
+    for (let i = 0; i < b.length; i++) c = crcTable[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  for (const [path, content] of entries) {
+    const name = enc.encode(path);
+    const data = typeof content === 'string' ? enc.encode(content) : content;
+    const crc = crc32(data);
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(6, 0x0800, true); // UTF-8 names
+    local.setUint32(14, crc, true);
+    local.setUint32(18, data.length, true);
+    local.setUint32(22, data.length, true);
+    local.setUint16(26, name.length, true);
+    chunks.push(local, name, data);
+
+    const cd = new DataView(new ArrayBuffer(46));
+    cd.setUint32(0, 0x02014b50, true);
+    cd.setUint16(4, 20, true);
+    cd.setUint16(6, 20, true);
+    cd.setUint16(8, 0x0800, true);
+    cd.setUint32(16, crc, true);
+    cd.setUint32(20, data.length, true);
+    cd.setUint32(24, data.length, true);
+    cd.setUint16(28, name.length, true);
+    cd.setUint32(42, offset, true);
+    central.push(cd, name);
+    offset += 30 + name.length + data.length;
+  }
+  const cdSize = central.reduce((s, c) => s + c.byteLength, 0);
+  const eocd = new DataView(new ArrayBuffer(22));
+  eocd.setUint32(0, 0x06054b50, true);
+  eocd.setUint16(8, entries.length, true);
+  eocd.setUint16(10, entries.length, true);
+  eocd.setUint32(12, cdSize, true);
+  eocd.setUint32(16, offset, true);
+  return new Blob([...chunks, ...central, eocd]);
 }

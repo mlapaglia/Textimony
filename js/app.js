@@ -3,11 +3,12 @@
 const S = {
   msgs: [],
   calls: [],
-  contacts: new Map(), // key -> { key, name, addr, group, lastT, label }
+  contacts: new Map(), // key -> { key, name, addr, group, lastT, s, label }
   seenMsgs: new Set(),
   seenCalls: new Set(),
   files: [],
-  filter: { contact: 'all', groups: true, from: null, to: null },
+  filter: { contact: 'all', source: 'all', groups: true, people: [], from: null, to: null },
+  peopleKeys: null, // Set of thread keys matching filter.people, or null when not filtering
   gran: 'auto',
   activeGran: 'month',
   calYear: null,
@@ -23,6 +24,8 @@ const $$ = (sel) => [...document.querySelectorAll(sel)];
 
 // ------------------------------------------------------------------ loading
 
+const isZip = (f) => /\.zip$/i.test(f.name) || /zip/.test(f.type);
+
 async function loadFiles(fileList) {
   const files = [...fileList].filter((f) => f.size > 0);
   if (!files.length) return;
@@ -33,11 +36,19 @@ async function loadFiles(fileList) {
   const bar = $('#progressBar');
   const text = $('#progressText');
 
+  // Each SMS backup is parsed on its own; all Takeout zips go together because a
+  // split export spreads one conversation across parts.
+  const zips = files.filter(isZip);
+  const jobs = files.filter((f) => !isZip(f)).map((f) => ({ files: [f], parse: (cb) => parseBackupFile(f, cb) }));
+  if (zips.length) jobs.push({ files: zips, parse: (cb) => parseGoogleChatZips(zips, cb) });
+  let badDates = 0;
+
   try {
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+    for (let i = 0; i < jobs.length; i++) {
+      const job = jobs[i];
+      const label = job.files.length > 1 ? `${job.files.length} zip files` : job.files[0].name;
       const before = S.msgs.length + S.calls.length;
-      const done = await parseBackupFile(file, {
+      const done = await job.parse({
         onBatch(msgs, calls) {
           for (const m of msgs) {
             const key = `${m.t}|${m.o}|${m.k}|${m.l}|${m.m}`;
@@ -53,9 +64,9 @@ async function loadFiles(fileList) {
           }
         },
         onProgress(loaded, total) {
-          const pct = ((i + loaded / total) / files.length) * 100;
+          const pct = ((i + loaded / total) / jobs.length) * 100;
           bar.style.width = pct.toFixed(1) + '%';
-          text.textContent = `Reading ${file.name} (${i + 1}/${files.length}) · ${fmtBytes(loaded)} of ${fmtBytes(total)} · ${fmtNum(S.msgs.length)} messages, ${fmtNum(S.calls.length)} calls`;
+          text.textContent = `Reading ${label} (${i + 1}/${jobs.length}) · ${fmtBytes(loaded)} of ${fmtBytes(total)} · ${fmtNum(S.msgs.length)} messages, ${fmtNum(S.calls.length)} calls`;
         },
       });
       for (const c of done.contacts) {
@@ -66,7 +77,9 @@ async function loadFiles(fileList) {
           if (!cur.addr) cur.addr = c.addr;
         }
       }
-      S.files.push({ name: file.name, size: file.size, added: S.msgs.length + S.calls.length - before });
+      badDates += done.counts.badDates || 0;
+      const added = S.msgs.length + S.calls.length - before;
+      for (const f of job.files) S.files.push({ name: f.name, size: f.size, added });
     }
   } catch (err) {
     console.error(err);
@@ -75,13 +88,17 @@ async function loadFiles(fileList) {
   }
 
   if (!S.msgs.length && !S.calls.length) {
-    showLoadError('No messages or calls were found. Make sure this is an XML backup from SMS Backup & Restore (sms-*.xml or calls-*.xml).');
+    showLoadError(badDates
+      ? 'The Google Chat dates are in a language this app can\'t read yet. Set your Google account language to English, export again, and retry.'
+      : 'No messages or calls were found. Use an XML backup from SMS Backup & Restore (sms-*.xml or calls-*.xml) or a Google Takeout zip that includes Google Chat.');
     return;
   }
 
   S.msgs.sort((a, b) => a.t - b.t);
   S.calls.sort((a, b) => a.t - b.t);
   for (const c of S.contacts.values()) c.label = contactLabel(c);
+  for (const c of S.contacts.values()) c.search = contactSearchText(c);
+  matchPeople();
   $('#landing').hidden = true;
   $('#dash').hidden = false;
   populateContacts();
@@ -109,11 +126,63 @@ function formatAddr(a) {
 }
 
 function contactLabel(c) {
+  const chat = c.s === 1 ? '💬' : '';
   if (c.group) {
-    if (c.name) return '👥 ' + c.name;
-    return '👥 ' + c.addr.split('~').map(formatAddr).join(', ');
+    if (c.name) return chat + '👥 ' + c.name;
+    return chat + '👥 ' + c.addr.split('~').map(formatAddr).join(', ');
   }
-  return c.name || formatAddr(c.addr) || c.key;
+  return (chat ? chat + ' ' : '') + (c.name || formatAddr(c.addr) || c.key);
+}
+
+/** Message source of a thread key: 1 = Google Chat, 0 = SMS. */
+function keySource(key) {
+  const c = S.contacts.get(key);
+  return c && c.s === 1 ? 1 : 0;
+}
+
+function hasBothSources() {
+  let sms = false, chat = false;
+  for (const c of S.contacts.values()) {
+    if (c.s === 1) chat = true;
+    else sms = true;
+    if (sms && chat) return true;
+  }
+  return false;
+}
+
+/**
+ * Lowercased text a people search matches against: the conversation's name and
+ * addresses plus, for groups, every member's name. SMS group keys are 'g:' + the
+ * members' 1-on-1 keys, so members' names come from their own contacts.
+ */
+function contactSearchText(c) {
+  const parts = [c.label, c.name, ...c.addr.split('~')];
+  if (c.group && c.key.startsWith('g:') && !c.key.startsWith('g:gc:')) {
+    for (const k of c.key.slice(2).split('~')) {
+      const member = S.contacts.get(k);
+      if (member) parts.push(member.name, member.addr);
+    }
+  }
+  return parts.filter(Boolean).join('\n').toLowerCase();
+}
+
+/** Recompute S.peopleKeys from S.filter.people (any term matches). */
+function matchPeople() {
+  const terms = S.filter.people;
+  if (!terms.length) { S.peopleKeys = null; return; }
+  S.peopleKeys = new Set();
+  for (const c of S.contacts.values()) {
+    if (terms.some((t) => c.search.includes(t))) S.peopleKeys.add(c.key);
+  }
+}
+
+function setPeople(text) {
+  S.filter.people = [...new Set(text.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean))];
+  matchPeople();
+  if (S.peopleKeys && !S.peopleKeys.has(S.filter.contact)) S.filter.contact = 'all';
+  S.browserLimit = 200;
+  populateContacts();
+  refresh();
 }
 
 function labelFor(key) {
@@ -128,12 +197,16 @@ function populateContacts() {
   for (const m of S.msgs) totals.set(m.k, (totals.get(m.k) || 0) + 1);
   const callTotals = new Map();
   for (const c of S.calls) callTotals.set(c.k, (callTotals.get(c.k) || 0) + 1);
-  const keys = [...new Set([...totals.keys(), ...callTotals.keys()])];
+  const { source } = S.filter;
+  const people = S.peopleKeys;
+  const keys = [...new Set([...totals.keys(), ...callTotals.keys()])]
+    .filter((k) => (source === 'all' || keySource(k) === source) && (!people || people.has(k)));
   keys.sort((a, b) => (totals.get(b) || 0) - (totals.get(a) || 0) || (callTotals.get(b) || 0) - (callTotals.get(a) || 0));
 
   const sel = $('#contactSel');
   sel.innerHTML = '';
-  const all = new Option(`All conversations (${fmtNum(S.msgs.length)})`, 'all');
+  const shown = source === 'all' && !people ? S.msgs.length : keys.reduce((s, k) => s + (totals.get(k) || 0), 0);
+  const all = new Option(`All conversations (${fmtNum(shown)})`, 'all');
   sel.add(all);
   for (const k of keys) {
     const n = totals.get(k) || 0;
@@ -144,6 +217,8 @@ function populateContacts() {
     sel.add(new Option(`${labelFor(k)} (${parts.join(', ')})`, k));
   }
   sel.value = S.filter.contact;
+  $('#sourceSeg').hidden = !hasBothSources();
+  $$('#sourceSeg button').forEach((b) => b.classList.toggle('on', b.dataset.source === String(source)));
   $('#fileInfo').textContent = S.files.map((f) => f.name).join(', ');
 }
 
@@ -156,16 +231,28 @@ function setContact(key) {
 }
 
 function baseMessages() {
-  const { contact, groups } = S.filter;
+  const { contact, groups, source } = S.filter;
   if (contact !== 'all') return S.msgs.filter((m) => m.k === contact);
-  if (!groups) return S.msgs.filter((m) => !m.k.startsWith('g:'));
-  return S.msgs;
+  const people = S.peopleKeys;
+  if (source === 'all' && groups && !people) return S.msgs;
+  return S.msgs.filter((m) =>
+    (source === 'all' || (m.s || 0) === source) && (groups || !m.k.startsWith('g:')) && (!people || people.has(m.k)));
 }
 
 function baseCalls() {
-  const { contact } = S.filter;
+  const { contact, source } = S.filter;
+  if (source === 1) return []; // calls only come from SMS Backup & Restore
   if (contact !== 'all') return S.calls.filter((c) => c.k === contact);
+  if (S.peopleKeys) return S.calls.filter((c) => S.peopleKeys.has(c.k));
   return S.calls;
+}
+
+function setSource(source) {
+  S.filter.source = source;
+  S.filter.contact = 'all';
+  S.browserLimit = 200;
+  populateContacts();
+  refresh();
 }
 
 function inRange(arr) {
@@ -277,7 +364,12 @@ function refresh({ timeline = true } = {}) {
 }
 
 function renderScope(n) {
-  const who = S.filter.contact === 'all' ? (S.filter.groups ? 'All conversations' : 'All 1-on-1 conversations') : labelFor(S.filter.contact);
+  const src = { all: '', 0: ' (SMS)', 1: ' (Google Chat)' }[S.filter.source];
+  const { people, groups } = S.filter;
+  const all = people.length
+    ? `${groups ? 'Conversations' : '1-on-1 conversations'} with ${people.map((p) => `“${p}”`).join(' or ')}`
+    : groups ? 'All conversations' : 'All 1-on-1 conversations';
+  const who = S.filter.contact === 'all' ? all + src : labelFor(S.filter.contact);
   const { first, last } = dataBounds();
   const from = new Date(S.filter.from ?? first).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   const to = new Date(S.filter.to ?? last).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
@@ -383,12 +475,13 @@ function renderKpis(A) {
 
 function renderCalls(ui) {
   const section = $('#callsSection');
-  if (!S.calls.length) {
+  const base = baseCalls();
+  if (!base.length) {
     section.hidden = true;
     return;
   }
   section.hidden = false;
-  const calls = inRange(baseCalls());
+  const calls = inRange(base);
   const C = aggregateCalls(calls);
   const talk = C.talk[0] + C.talk[1];
   const connected = C.byType[0] + C.byType[1];
@@ -443,10 +536,12 @@ function renderBrowser(msgs) {
     row.className = 'msg ' + (m.o ? 'sent' : 'recv');
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    if (showWho && S.filter.contact === 'all') {
+    if (showWho && (S.filter.contact === 'all' || m.sn)) {
       const who = document.createElement('div');
       who.className = 'who';
-      who.textContent = (m.o ? 'To ' : 'From ') + labelFor(m.k);
+      if (S.filter.contact !== 'all') who.textContent = m.sn;
+      else if (m.sn) who.textContent = `${m.sn} · ${labelFor(m.k)}`;
+      else who.textContent = (m.o ? 'To ' : 'From ') + labelFor(m.k);
       bubble.appendChild(who);
     }
     if (m.b) {
@@ -521,6 +616,10 @@ function init() {
   });
 
   $('#contactSel').onchange = (e) => setContact(e.target.value);
+  $('#sourceSeg').onclick = (e) => {
+    const v = e.target.dataset.source;
+    if (v) setSource(v === 'all' ? 'all' : +v);
+  };
   $('#groupsChk').onchange = (e) => {
     S.filter.groups = e.target.checked;
     refresh();
@@ -542,6 +641,11 @@ function init() {
     if (!g) return;
     S.gran = g;
     renderTimeline(S.ui, baseMessages());
+  };
+
+  $('#peopleInput').oninput = (e) => {
+    clearTimeout(S.peopleTimer);
+    S.peopleTimer = setTimeout(() => setPeople(e.target.value), 200);
   };
 
   $('#search').oninput = (e) => {

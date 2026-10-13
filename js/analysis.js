@@ -1,9 +1,12 @@
 /*
  * Aggregations over parsed message / call records.
  *
- * Message record (from parser.js):
+ * Message record (from parser.js / googlechat.js):
  *   t  epoch ms      o  1 = sent, 0 = received      m  1 = MMS, 0 = SMS
- *   k  thread key    b  text body                   l  length in characters
+ *   s  source: 0 = SMS Backup & Restore, 1 = Google Chat
+ *   sn sender name (Google Chat group messages you received; otherwise absent)
+ *   k  thread key ('g:' prefix = group chat; Google Chat keys contain 'gc:')
+ *   b  text body                   l  length in characters
  *   wc word count    e  array of emoji or null      f  trait bit flags
  *   ph/gf/vd/au/ot   photo / gif / video / audio / other attachment counts
  *   mb attachment bytes   h hour   w weekday (0 = Sun)   d local day number   mo year*12+month
