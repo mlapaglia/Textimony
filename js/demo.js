@@ -378,7 +378,9 @@ function buildDemoChatZips(rand, pick, lines, startT, endT, stamp) {
           used.set(export_name, nth + 1);
           const dot = export_name.lastIndexOf('.');
           const disk = nth ? `${export_name.slice(0, dot)}(${nth})${export_name.slice(dot)}` : export_name;
-          part2.push([`${root}Groups/${c.dir}/${disk}`, randomBytes(800 + Math.floor(rand() * 4000))]);
+          // Real images for photos and GIFs; the video and PDF are junk bytes, so the page falls back to a download link.
+          const bytes = /\.(png|jpg)$/.test(name) ? demoPng(rand) : /\.gif$/.test(name) ? demoGif(rand) : randomBytes(800 + Math.floor(rand() * 4000));
+          part2.push([`${root}Groups/${c.dir}/${disk}`, bytes]);
           msg.attached_files = [{ original_name: name, export_name }];
         }
         msg.topic_id = topic;
@@ -402,19 +404,122 @@ function buildDemoChatZips(rand, pick, lines, startT, endT, stamp) {
   ];
 }
 
+const DEMO_CRC_TABLE = new Uint32Array(256).map((_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c;
+});
+
+function crc32(b, c = 0xffffffff) {
+  for (let i = 0; i < b.length; i++) c = DEMO_CRC_TABLE[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+/** A small landscape-ish PNG (sky gradient, sun, hills), uncompressed, for demo photo attachments. */
+function demoPng(rand, w = 160, h = 120) {
+  const hue = rand() * 360;
+  const rgb = (hh, sat, light) => {
+    const k = (n) => (n + hh / 30) % 12;
+    const a = sat * Math.min(light, 1 - light);
+    return [0, 8, 4].map((n) => Math.round(255 * (light - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1)))));
+  };
+  const sunX = w * (0.2 + rand() * 0.6), sunY = h * (0.2 + rand() * 0.25), sunR = h * 0.12;
+  const hills = [rand() * 6, rand() * 6, 0.45 + rand() * 0.2];
+  const raw = new Uint8Array((w * 3 + 1) * h);
+  let p = 0;
+  for (let y = 0; y < h; y++) {
+    raw[p++] = 0; // filter: none
+    for (let x = 0; x < w; x++) {
+      const ground = h * (hills[2] + 0.12 * Math.sin(x / 30 + hills[0]) + 0.06 * Math.sin(x / 13 + hills[1]));
+      let c;
+      if (y > ground) c = rgb((hue + 140) % 360, 0.45, 0.22 + 0.1 * ((y - ground) / h));
+      else if ((x - sunX) ** 2 + (y - sunY) ** 2 < sunR ** 2) c = rgb((hue + 40) % 360, 0.9, 0.75);
+      else c = rgb(hue, 0.65, 0.55 + 0.3 * (y / h));
+      raw[p++] = c[0]; raw[p++] = c[1]; raw[p++] = c[2];
+    }
+  }
+  // zlib stream of stored (uncompressed) deflate blocks
+  const blocks = Math.ceil(raw.length / 65535);
+  const z = new Uint8Array(2 + raw.length + blocks * 5 + 4);
+  let q = 0;
+  z[q++] = 0x78; z[q++] = 0x01;
+  for (let i = 0; i < blocks; i++) {
+    const len = Math.min(65535, raw.length - i * 65535);
+    z[q++] = i === blocks - 1 ? 1 : 0;
+    z[q++] = len & 255; z[q++] = len >> 8; z[q++] = ~len & 255; z[q++] = (~len >> 8) & 255;
+    z.set(raw.subarray(i * 65535, i * 65535 + len), q);
+    q += len;
+  }
+  let a1 = 1, a2 = 0;
+  for (let i = 0; i < raw.length; i++) { a1 = (a1 + raw[i]) % 65521; a2 = (a2 + a1) % 65521; }
+  z[q++] = a2 >> 8; z[q++] = a2 & 255; z[q++] = a1 >> 8; z[q++] = a1 & 255;
+  const chunk = (type, data) => {
+    const out = new Uint8Array(12 + data.length);
+    const v = new DataView(out.buffer);
+    v.setUint32(0, data.length);
+    for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+    out.set(data, 8);
+    v.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)));
+    return out;
+  };
+  const ihdr = new Uint8Array(13);
+  new DataView(ihdr.buffer).setUint32(0, w);
+  new DataView(ihdr.buffer).setUint32(4, h);
+  ihdr.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
+  const parts = [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', z), chunk('IEND', new Uint8Array(0))];
+  const out = new Uint8Array(parts.reduce((n, x) => n + x.length, 0));
+  let o = 0;
+  for (const x of parts) { out.set(x, o); o += x.length; }
+  return out;
+}
+
+/**
+ * A small looping animated GIF (moving confetti stripes) for demo GIF attachments.
+ * Uses "uncompressed" LZW: 7-bit pixels sent as 8-bit codes with a clear code every
+ * 126 pixels, so the code width never grows.
+ */
+function demoGif(rand, w = 160, h = 120, frames = 6) {
+  const bytes = [];
+  const push = (...b) => bytes.push(...b);
+  const u16 = (n) => push(n & 255, n >> 8);
+  push(...'GIF89a'.split('').map((c) => c.charCodeAt(0)));
+  u16(w); u16(h);
+  push(0xf6, 0, 0); // global color table, 128 entries
+  const base = rand() * 360;
+  for (let i = 0; i < 128; i++) {
+    const hh = (base + i * 2.8) % 360;
+    const k = (n) => (n + hh / 30) % 12;
+    const a = 0.8 * Math.min(0.55, 0.45);
+    for (const n of [0, 8, 4]) push(Math.round(255 * (0.55 - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1)))));
+  }
+  push(0x21, 0xff, 11, ...'NETSCAPE2.0'.split('').map((c) => c.charCodeAt(0)), 3, 1, 0, 0, 0); // loop forever
+  for (let f = 0; f < frames; f++) {
+    push(0x21, 0xf9, 4, 0, 10, 0, 0, 0); // 100 ms per frame
+    push(0x2c); u16(0); u16(0); u16(w); u16(h); push(0);
+    push(7); // LZW minimum code size
+    const codes = [];
+    let run = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (run === 0) codes.push(128); // clear
+        codes.push(Math.floor(((x + y + f * 20) % 128) / 16) * 16 + ((x * 7 + y * 3) % 16));
+        run = (run + 1) % 126;
+      }
+    }
+    codes.push(129); // end of information
+    for (let i = 0; i < codes.length; i += 255) {
+      const block = codes.slice(i, i + 255);
+      push(block.length, ...block);
+    }
+    push(0);
+  }
+  push(0x3b);
+  return new Uint8Array(bytes);
+}
+
 /** Minimal zip writer (no compression) for the demo export. entries: [[path, string | Uint8Array]]. */
 function buildStoredZip(entries) {
   const enc = new TextEncoder();
-  const crcTable = new Uint32Array(256).map((_, n) => {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    return c;
-  });
-  const crc32 = (b) => {
-    let c = 0xffffffff;
-    for (let i = 0; i < b.length; i++) c = crcTable[(c ^ b[i]) & 0xff] ^ (c >>> 8);
-    return (c ^ 0xffffffff) >>> 0;
-  };
   const chunks = [];
   const central = [];
   let offset = 0;

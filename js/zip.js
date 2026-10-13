@@ -81,15 +81,28 @@ function zipLib() {
     return entries;
   }
 
-  async function readEntryText(e) {
+  /** The (still compressed) bytes of an entry, as a lazy slice of the zip file. */
+  async function entryData(e) {
     const head = await readBytes(e.file, e.offset, e.offset + 30);
     if (head.getUint32(0, true) !== SIG_LOCAL) throw new Error(`${e.file.name}: damaged entry ${e.name}`);
     const start = e.offset + 30 + head.getUint16(26, true) + head.getUint16(28, true);
-    const data = e.file.slice(start, start + e.csize);
+    if (e.method !== 0 && e.method !== 8) throw new Error(`${e.name}: unsupported zip compression method ${e.method}`);
+    return e.file.slice(start, start + e.csize);
+  }
+
+  async function readEntryText(e) {
+    const data = await entryData(e);
     if (e.method === 0) return data.text();
-    if (e.method !== 8) throw new Error(`${e.name}: unsupported zip compression method ${e.method}`);
     return new Response(data.stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
   }
 
-  return { listZip, readEntryText };
+  /** An entry's contents as a Blob of the given type. Stored entries stay a lazy slice of the zip. */
+  async function readEntryBlob(e, type = '') {
+    const data = await entryData(e);
+    if (e.method === 0) return new Blob([data], { type });
+    const blob = await new Response(data.stream().pipeThrough(new DecompressionStream('deflate-raw'))).blob();
+    return new Blob([blob], { type });
+  }
+
+  return { listZip, readEntryText, readEntryBlob };
 }

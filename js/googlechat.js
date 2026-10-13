@@ -136,8 +136,9 @@ function googleChatParserWorker(self, lib) {
       return g;
     };
 
-    for (const file of files) {
-      for (const e of await listZip(file)) {
+    for (let z = 0; z < files.length; z++) {
+      for (const e of await listZip(files[z])) {
+        e.z = z; // which of the zips it's in, so the page can load it later
         if (e.name.endsWith('/')) continue;
         if (USER_INFO_RE.test(e.name)) { userInfos.push(e); continue; }
         const m = e.name.match(GROUP_FILE_RE);
@@ -145,7 +146,7 @@ function googleChatParserWorker(self, lib) {
         const g = groupOf(m[1]);
         if (m[2] === 'messages.json') g.messages = e;
         else if (m[2] === 'group_info.json') g.info = e;
-        else g.files.set(m[2], e.usize);
+        else g.files.set(m[2], e);
       }
     }
 
@@ -202,10 +203,18 @@ function googleChatParserWorker(self, lib) {
         if (desc.group && !o) rec.sn = personName(creator);
         for (const f of files) {
           const name = f.export_name || f.original_name || '';
-          rec[mediaKind(name)]++;
+          const kind = mediaKind(name);
+          rec[kind]++;
           const n = repeats.get(name) || 0;
           repeats.set(name, n + 1);
-          rec.mb += g.files.get(diskName(name, n)) || 0;
+          const e = g.files.get(diskName(name, n));
+          // Where the file is, so the message list can show it: zip index, local header offset, sizes, method.
+          const att = { n: f.original_name || name, k: kind };
+          if (e) {
+            rec.mb += e.usize;
+            Object.assign(att, { z: e.z, o: e.offset, c: e.csize, u: e.usize, m: e.method, p: e.name });
+          }
+          (rec.att || (rec.att = [])).push(att);
         }
         analyzeText(text, rec);
         stampTime(rec);

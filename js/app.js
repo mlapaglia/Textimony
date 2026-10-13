@@ -13,6 +13,7 @@ const S = {
   // `auto` is false once picked by hand.
   owners: { 2: { name: '', auto: true }, 3: { name: '', auto: true } },
   firstSeen: new Map(), // key -> time of the first message ever loaded for that conversation
+  archives: [], // loaded export zips; message attachments point into these by index (att.z)
   docFreq: null, // { sig, value } cache for "What you talk about"
   leader: { sort: 'n', asc: false, all: false }, // leaderboard sorting
   wrapYear: null,
@@ -74,7 +75,12 @@ async function loadFiles(fileList) {
     const of = (kind) => files.filter((f, i) => kinds[i] === kind);
     const jobs = of('sms').map((f) => ({ files: [f], parse: (cb) => parseBackupFile(f, cb) }));
     const gchat = of('gchat');
-    if (gchat.length) jobs.push({ files: gchat, gchat: true, parse: (cb) => parseGoogleChatZips(gchat, cb) });
+    if (gchat.length) {
+      // Attachments reference their zip by index into this job's files; offset that into S.archives.
+      const attBase = S.archives.length;
+      S.archives.push(...gchat);
+      jobs.push({ files: gchat, gchat: true, attBase, parse: (cb) => parseGoogleChatZips(gchat, cb) });
+    }
     const wa = of('whatsapp');
     if (wa.length) jobs.push({ files: wa, parse: (cb) => parseWhatsAppFiles(wa, cb) });
     const im = of('imessage');
@@ -91,6 +97,7 @@ async function loadFiles(fileList) {
             const key = `${m.t}|${hasOwner(m.s) ? m.sn : m.o}|${m.k}|${m.l}|${m.m}`;
             if (S.seenMsgs.has(key)) continue;
             S.seenMsgs.add(key);
+            if (m.att && job.attBase) for (const a of m.att) if (a.z != null) a.z += job.attBase;
             S.msgs.push(m);
           }
           for (const c of calls) {
@@ -974,6 +981,118 @@ function renderCalls(ui) {
 
 // ------------------------------------------------------------------ message browser
 
+// ------------------------------------------------------------------ attachments in the message list
+//
+// Attachments that point into a loaded zip (att.z) are read only when their bubble
+// scrolls into view, shown from an object URL, and released on the next re-render.
+
+const MIME = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+  heic: 'image/heic', heif: 'image/heif', svg: 'image/svg+xml',
+  mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', '3gp': 'video/3gpp',
+  mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', opus: 'audio/ogg', wav: 'audio/wav', amr: 'audio/amr',
+  pdf: 'application/pdf',
+};
+const ATT_ICON = { ph: '📷', gf: '🎞️', vd: '🎬', au: '🎤', ot: '📎' };
+const Media = { urls: [], observer: null, zip: null };
+
+function mimeOf(name) {
+  const dot = name.lastIndexOf('.');
+  return MIME[dot >= 0 ? name.slice(dot + 1).toLowerCase() : ''] || '';
+}
+
+/** Placeholder for one attachment; loads the real thing when it scrolls into view. */
+function attachmentEl(a) {
+  const el = document.createElement('div');
+  const loadable = a.z != null && S.archives[a.z];
+  el.className = `media media-${a.k}${loadable ? ' loading' : ' missing'}`;
+  el.textContent = `${ATT_ICON[a.k] || '📎'} ${a.n}`;
+  if (!loadable) {
+    el.title = 'This file is not in the loaded export';
+    return el;
+  }
+  el._att = a;
+  Media.observer.observe(el);
+  return el;
+}
+
+async function loadAttachment(el) {
+  const a = el._att;
+  const type = mimeOf(a.n) || mimeOf(a.p || '');
+  let url;
+  try {
+    Media.zip = Media.zip || zipLib();
+    const blob = await Media.zip.readEntryBlob({ file: S.archives[a.z], offset: a.o, csize: a.c, method: a.m, name: a.p }, type);
+    url = URL.createObjectURL(blob);
+    Media.urls.push(url);
+  } catch (err) {
+    console.warn('Could not read attachment', a.n, err);
+    el.className = `media media-${a.k} missing`;
+    el.title = 'Could not read this file from the export';
+    return;
+  }
+  if (!el.isConnected) return;
+  const fallback = () => {
+    // The browser can't show this format (e.g. HEIC in Chrome): offer the file instead.
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = a.n;
+    link.textContent = `${ATT_ICON[a.k] || '📎'} ${a.n} · ${fmtBytes(a.u)} · download`;
+    el.className = `media media-${a.k} file`;
+    el.replaceChildren(link);
+  };
+  el.classList.remove('loading');
+  if (type.startsWith('image/')) {
+    const img = new Image();
+    img.alt = a.n;
+    img.decoding = 'async';
+    img.onerror = fallback;
+    img.onclick = () => openLightbox(url, a.n);
+    img.src = url;
+    el.replaceChildren(img);
+  } else if (type.startsWith('video/')) {
+    const video = document.createElement('video');
+    video.controls = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    video.onerror = fallback;
+    video.src = url;
+    el.replaceChildren(video);
+  } else if (type.startsWith('audio/')) {
+    const audio = document.createElement('audio');
+    audio.controls = true;
+    audio.preload = 'metadata';
+    audio.onerror = fallback;
+    audio.src = url;
+    el.replaceChildren(audio);
+  } else {
+    fallback();
+  }
+}
+
+/** Release the previous render's object URLs and start watching for a new set of attachments. */
+function resetMedia(root) {
+  for (const url of Media.urls) URL.revokeObjectURL(url);
+  Media.urls = [];
+  if (Media.observer) Media.observer.disconnect();
+  Media.observer = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      Media.observer.unobserve(e.target);
+      loadAttachment(e.target);
+    }
+  }, { root, rootMargin: '400px 0px' });
+}
+
+function openLightbox(url, name) {
+  const dlg = $('#lightbox');
+  const img = dlg.querySelector('img');
+  img.src = url;
+  img.alt = name;
+  dlg.querySelector('.caption').textContent = name;
+  dlg.showModal();
+}
+
 function renderBrowser(msgs) {
   const q = S.browserQuery.trim().toLowerCase();
   const list = q ? msgs.filter((m) => m.b && m.b.toLowerCase().includes(q)) : msgs;
@@ -981,6 +1100,7 @@ function renderBrowser(msgs) {
   const shown = list.slice(start);
   const box = $('#messages');
   box.innerHTML = '';
+  resetMedia(box);
   $('#browserCount').textContent = `${fmtNum(list.length)} message${list.length === 1 ? '' : 's'}${q ? ' matching' : ''} · showing latest ${fmtNum(shown.length)}`;
   $('#moreBtn').hidden = start === 0;
 
@@ -1014,12 +1134,21 @@ function renderBrowser(msgs) {
       body.textContent = m.b;
       bubble.appendChild(body);
     }
+    if (m.att) {
+      const media = document.createElement('div');
+      media.className = 'media-list';
+      for (const a of m.att) media.appendChild(attachmentEl(a));
+      bubble.appendChild(media);
+    }
+    // Sources without attachment references only know how many there were.
     const att = [];
-    if (m.ph) att.push(`📷 ${m.ph > 1 ? m.ph + ' photos' : 'Photo'}`);
-    if (m.gf) att.push(`🎞️ ${m.gf > 1 ? m.gf + ' GIFs' : 'GIF'}`);
-    if (m.vd) att.push(`🎬 ${m.vd > 1 ? m.vd + ' videos' : 'Video'}`);
-    if (m.au) att.push(`🎤 ${m.au > 1 ? m.au + ' audio clips' : 'Audio'}`);
-    if (m.ot) att.push(`📎 ${m.ot > 1 ? m.ot + ' files' : 'File'}`);
+    if (!m.att) {
+      if (m.ph) att.push(`📷 ${m.ph > 1 ? m.ph + ' photos' : 'Photo'}`);
+      if (m.gf) att.push(`🎞️ ${m.gf > 1 ? m.gf + ' GIFs' : 'GIF'}`);
+      if (m.vd) att.push(`🎬 ${m.vd > 1 ? m.vd + ' videos' : 'Video'}`);
+      if (m.au) att.push(`🎤 ${m.au > 1 ? m.au + ' audio clips' : 'Audio'}`);
+      if (m.ot) att.push(`📎 ${m.ot > 1 ? m.ot + ' files' : 'File'}`);
+    }
     if (att.length) {
       const a = document.createElement('div');
       a.className = 'att';
@@ -1134,6 +1263,7 @@ function init() {
     if (li) setContact(li.dataset.key);
   };
   $('#wrapSave').onclick = saveWrapped;
+  $('#lightbox').onclick = () => $('#lightbox').close();
   observeLazySections();
 
   $('#search').oninput = (e) => {
