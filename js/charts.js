@@ -1,0 +1,650 @@
+/*
+ * ECharts option builders. Each builder takes aggregated data plus the current
+ * theme tokens (read from CSS custom properties) and returns a full option object.
+ */
+const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+const HOUR_LABELS = Array.from({ length: 24 }, (_, h) => (h === 0 ? '12a' : h < 12 ? h + 'a' : h === 12 ? '12p' : h - 12 + 'p'));
+const DOW_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+const Charts = {
+  instances: new Map(),
+
+  /** Render (or re-render) a chart into the element with the given id. */
+  set(id, option, { notMerge = true } = {}) {
+    const el = document.getElementById(id);
+    if (!el) return null;
+    let chart = this.instances.get(id);
+    if (!chart) {
+      chart = echarts.init(el, null, { renderer: 'canvas' });
+      this.instances.set(id, chart);
+      new ResizeObserver(() => chart.resize()).observe(el);
+    }
+    chart.setOption(option, { notMerge, lazyUpdate: false });
+    return chart;
+  },
+
+  get(id) {
+    return this.instances.get(id);
+  },
+};
+
+/** Theme tokens from CSS custom properties, so light/dark is defined in one place. */
+function readTheme() {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (name) => cs.getPropertyValue(name).trim();
+  return {
+    surface: v('--surface'),
+    text: v('--text'),
+    text2: v('--text-2'),
+    muted: v('--muted'),
+    grid: v('--grid'),
+    axis: v('--axis'),
+    border: v('--border-strong'),
+    empty: v('--heat-empty'),
+    series: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => v('--series-' + i)),
+    heat: [0, 1, 2, 3, 4].map((i) => v('--heat-' + i)),
+    get sent() { return this.series[0]; },
+    get recv() { return this.series[1]; },
+  };
+}
+
+// ------------------------------------------------------------------ shared parts
+
+function baseOption(ui, { toolbox = true, boxZoom = false } = {}) {
+  const feature = {};
+  if (boxZoom) feature.dataZoom = { yAxisIndex: 'none', title: { zoom: 'Box zoom', back: 'Undo zoom' } };
+  feature.restore = { title: 'Reset' };
+  feature.saveAsImage = { title: 'Save PNG', backgroundColor: ui.surface, pixelRatio: 2 };
+  return {
+    backgroundColor: 'transparent',
+    textStyle: { fontFamily: FONT, color: ui.text2 },
+    animationDuration: 350,
+    animationDurationUpdate: 300,
+    legend: {
+      top: 0,
+      left: 0,
+      icon: 'roundRect',
+      itemWidth: 10,
+      itemHeight: 10,
+      itemGap: 14,
+      textStyle: { color: ui.text2, fontSize: 12 },
+      inactiveColor: ui.axis,
+    },
+    toolbox: toolbox
+      ? { right: 0, top: -4, itemSize: 14, feature, iconStyle: { borderColor: ui.muted }, emphasis: { iconStyle: { borderColor: ui.text } } }
+      : undefined,
+    tooltip: tooltipBase(ui),
+    grid: { left: 4, right: 12, top: 36, bottom: 4, containLabel: true },
+  };
+}
+
+function tooltipBase(ui, trigger = 'axis', pointer = 'shadow') {
+  return {
+    trigger,
+    confine: true,
+    backgroundColor: ui.surface,
+    borderColor: ui.border,
+    borderWidth: 1,
+    padding: [8, 10],
+    textStyle: { color: ui.text, fontSize: 12, fontFamily: FONT },
+    extraCssText: 'box-shadow: 0 4px 16px rgba(0,0,0,.12); border-radius: 8px;',
+    axisPointer: pointer === 'shadow'
+      ? { type: 'shadow', shadowStyle: { color: ui.grid, opacity: 0.5 } }
+      : { type: 'line', lineStyle: { color: ui.muted, width: 1, type: 'dashed' } },
+  };
+}
+
+function catAxis(ui, data, extra = {}) {
+  return {
+    type: 'category',
+    data,
+    axisLine: { lineStyle: { color: ui.axis } },
+    axisTick: { show: false },
+    axisLabel: { color: ui.muted, fontSize: 11 },
+    ...extra,
+  };
+}
+
+function valAxis(ui, extra = {}) {
+  return {
+    type: 'value',
+    splitLine: { lineStyle: { color: ui.grid } },
+    axisLine: { show: false },
+    axisTick: { show: false },
+    axisLabel: { color: ui.muted, fontSize: 11 },
+    ...extra,
+  };
+}
+
+function bar(name, data, color, ui, { stack, rounded = true, horizontal = false } = {}) {
+  const r = rounded ? (horizontal ? [0, 4, 4, 0] : [4, 4, 0, 0]) : 0;
+  return {
+    name,
+    type: 'bar',
+    stack,
+    data,
+    barMaxWidth: 26,
+    barCategoryGap: '28%',
+    itemStyle: { color, borderRadius: r, borderColor: ui.surface, borderWidth: stack ? 1 : 0 },
+    emphasis: { focus: 'series' },
+  };
+}
+
+function line(name, data, color, extra = {}) {
+  return {
+    name,
+    type: 'line',
+    data,
+    showSymbol: false,
+    symbolSize: 8,
+    smooth: 0.2,
+    lineStyle: { width: 2, color },
+    itemStyle: { color },
+    emphasis: { focus: 'series' },
+    ...extra,
+  };
+}
+
+function insideZoom(extra = {}) {
+  // ctrl/⌘ + wheel (or trackpad pinch) zooms; drag pans. Plain scroll keeps scrolling the page.
+  return { type: 'inside', zoomOnMouseWheel: 'ctrl', moveOnMouseWheel: false, moveOnMouseMove: true, ...extra };
+}
+
+function sliderZoom(ui, extra = {}) {
+  return {
+    type: 'slider',
+    height: 22,
+    bottom: 6,
+    borderColor: ui.grid,
+    fillerColor: 'rgba(127,127,127,0.12)',
+    backgroundColor: 'transparent',
+    dataBackground: { lineStyle: { color: ui.axis }, areaStyle: { color: ui.grid } },
+    selectedDataBackground: { lineStyle: { color: ui.sent }, areaStyle: { color: ui.sent, opacity: 0.25 } },
+    handleStyle: { color: ui.surface, borderColor: ui.muted },
+    moveHandleStyle: { color: ui.axis },
+    textStyle: { color: ui.muted, fontSize: 11 },
+    brushSelect: false,
+    ...extra,
+  };
+}
+
+/** Sent + Received stacked bars over a category axis. */
+function sentRecvStack(ui, labels, A_sent, A_recv, { horizontal = false } = {}) {
+  const opt = baseOption(ui, { boxZoom: !horizontal });
+  const cat = catAxis(ui, labels, horizontal ? { inverse: true } : {});
+  const val = valAxis(ui);
+  if (horizontal) {
+    opt.yAxis = cat;
+    opt.xAxis = val;
+  } else {
+    opt.xAxis = cat;
+    opt.yAxis = val;
+  }
+  opt.series = [
+    bar('Sent', A_sent, ui.sent, ui, { stack: 'm', rounded: false, horizontal }),
+    bar('Received', A_recv, ui.recv, ui, { stack: 'm', horizontal }),
+  ];
+  opt.tooltip.formatter = stackTooltip;
+  return opt;
+}
+
+function dot(color) {
+  return `<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${color};margin-right:6px"></span>`;
+}
+
+function stackTooltip(params) {
+  if (!params.length) return '';
+  let total = 0;
+  for (const p of params) total += +(Array.isArray(p.value) ? p.value[1] : p.value) || 0;
+  let html = `<div style="font-weight:600;margin-bottom:4px">${params[0].axisValueLabel}</div>`;
+  for (const p of params) {
+    const v = +(Array.isArray(p.value) ? p.value[1] : p.value) || 0;
+    html += `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(p.color)}${p.seriesName}</span><b>${fmtNum(v)}</b></div>`;
+  }
+  if (params.length > 1) html += `<div style="display:flex;justify-content:space-between;gap:16px;margin-top:4px;border-top:1px solid rgba(127,127,127,.25);padding-top:4px"><span>Total</span><b>${fmtNum(total)}</b></div>`;
+  return html;
+}
+
+// ------------------------------------------------------------------ message charts
+
+const GRAN_MS = { day: 86400000, week: 7 * 86400000, month: 31 * 86400000 };
+
+/** Bucket the start of a day number into day / week (Sunday) / month timestamps. */
+function bucketOfDay(d, gran) {
+  if (gran === 'day') return dayToTs(d);
+  const ts = dayToTs(d);
+  const dt = new Date(ts);
+  if (gran === 'week') return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() - dt.getDay()).getTime();
+  return new Date(dt.getFullYear(), dt.getMonth(), 1).getTime();
+}
+function bucketEnd(ts, gran) {
+  const dt = new Date(ts);
+  if (gran === 'day') return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() + 1).getTime() - 1;
+  if (gran === 'week') return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() + 7).getTime() - 1;
+  return new Date(dt.getFullYear(), dt.getMonth() + 1, 1).getTime() - 1;
+}
+function nextBucket(ts, gran) {
+  return bucketEnd(ts, gran) + 1;
+}
+
+function buildTimeline(days, gran) {
+  // days: Map day -> [r, s]
+  const keys = [...days.keys()].sort((a, b) => a - b);
+  if (!keys.length) return { x: [], s: [], r: [] };
+  const map = new Map();
+  for (const d of keys) {
+    const b = bucketOfDay(d, gran);
+    let v = map.get(b);
+    if (!v) map.set(b, (v = [0, 0]));
+    const dv = days.get(d);
+    v[0] += dv[0];
+    v[1] += dv[1];
+  }
+  // Fill empty buckets so gaps show as zero
+  const x = [], s = [], r = [];
+  const lastB = bucketOfDay(keys[keys.length - 1], gran);
+  for (let b = bucketOfDay(keys[0], gran); b <= lastB; b = nextBucket(b, gran)) {
+    const v = map.get(b) || [0, 0];
+    x.push(b);
+    r.push(v[0]);
+    s.push(v[1]);
+  }
+  return { x, s, r };
+}
+
+function timelineOption(ui, tl, gran, zoom) {
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.grid = { left: 4, right: 12, top: 36, bottom: 44, containLabel: true };
+  opt.xAxis = {
+    type: 'time',
+    axisLine: { lineStyle: { color: ui.axis } },
+    axisTick: { show: false },
+    axisLabel: { color: ui.muted, fontSize: 11, hideOverlap: true },
+    splitLine: { show: false },
+  };
+  opt.yAxis = valAxis(ui);
+  const fmtBucket = (ts) => {
+    const d = new Date(ts);
+    if (gran === 'month') return d.toLocaleDateString(undefined, { year: 'numeric', month: 'long' });
+    if (gran === 'week') return 'Week of ' + d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    return d.toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+  };
+  opt.tooltip = tooltipBase(ui, 'axis', 'line');
+  opt.tooltip.formatter = (params) => {
+    params.forEach((p) => (p.axisValueLabel = fmtBucket(p.value[0])));
+    return stackTooltip(params);
+  };
+  const s = tl.x.map((x, i) => [x, tl.s[i]]);
+  const r = tl.x.map((x, i) => [x, tl.r[i]]);
+  opt.series = [
+    { ...bar('Sent', s, ui.sent, ui, { stack: 'm', rounded: false }), barCategoryGap: '15%', barMaxWidth: 40 },
+    { ...bar('Received', r, ui.recv, ui, { stack: 'm' }), barCategoryGap: '15%', barMaxWidth: 40 },
+  ];
+  if (gran === 'day' && tl.x.length > 14) {
+    const avg = tl.x.map((x, i) => {
+      let sum = 0, n = 0;
+      for (let j = Math.max(0, i - 6); j <= i; j++) { sum += tl.s[j] + tl.r[j]; n++; }
+      return [x, Math.round((sum / n) * 10) / 10];
+    });
+    opt.series.push(line('7-day average', avg, ui.text2, { lineStyle: { width: 2, color: ui.text2 }, smooth: 0.3, z: 5 }));
+  }
+  opt.dataZoom = [
+    sliderZoom(ui, { xAxisIndex: 0, startValue: zoom.from ?? undefined, endValue: zoom.to ?? undefined }),
+    insideZoom({ xAxisIndex: 0, startValue: zoom.from ?? undefined, endValue: zoom.to ?? undefined }),
+  ];
+  return opt;
+}
+
+function hourOption(ui, A) {
+  return sentRecvStack(ui, HOUR_LABELS, A.hour[1], A.hour[0]);
+}
+
+function dowOption(ui, A) {
+  return sentRecvStack(ui, DOW_LABELS, A.dow[1], A.dow[0]);
+}
+
+function heatOption(ui, A) {
+  const data = [];
+  let max = 0;
+  for (let w = 0; w < 7; w++) for (let h = 0; h < 24; h++) {
+    const v = A.heat[w * 24 + h];
+    max = Math.max(max, v);
+    data.push([h, w, v]);
+  }
+  const opt = baseOption(ui);
+  delete opt.legend;
+  opt.grid = { left: 4, right: 12, top: 28, bottom: 44, containLabel: true };
+  opt.xAxis = catAxis(ui, HOUR_LABELS, { splitArea: { show: false } });
+  opt.yAxis = catAxis(ui, DOW_LABELS, { inverse: true, axisLine: { show: false } });
+  opt.visualMap = {
+    min: 0,
+    max: Math.max(1, max),
+    calculable: false,
+    orient: 'horizontal',
+    left: 'center',
+    bottom: 0,
+    itemHeight: 160,
+    itemWidth: 10,
+    text: ['More', 'Less'],
+    textStyle: { color: ui.muted, fontSize: 11 },
+    inRange: { color: ui.heat },
+  };
+  opt.tooltip = tooltipBase(ui, 'item');
+  opt.tooltip.formatter = (p) => `<b>${DOW_LABELS[p.value[1]]} ${HOUR_LABELS[p.value[0]]}</b><br>${fmtNum(p.value[2])} messages`;
+  opt.series = [{
+    type: 'heatmap',
+    data,
+    itemStyle: { borderColor: ui.surface, borderWidth: 2, borderRadius: 3 },
+    emphasis: { itemStyle: { borderColor: ui.text, borderWidth: 1 } },
+  }];
+  return opt;
+}
+
+function calendarOption(ui, A, year) {
+  const data = [];
+  const vals = [];
+  for (const [d, v] of A.days) {
+    const ts = dayToTs(d);
+    const dt = new Date(ts);
+    if (dt.getFullYear() !== year) continue;
+    const tot = v[0] + v[1];
+    const iso = `${year}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    data.push([iso, tot, v[1], v[0]]);
+    vals.push(tot);
+  }
+  vals.sort((a, b) => a - b);
+  const p95 = vals.length ? vals[Math.floor(vals.length * 0.95)] || vals[vals.length - 1] : 1;
+  const opt = baseOption(ui);
+  delete opt.legend;
+  delete opt.grid;
+  opt.tooltip = tooltipBase(ui, 'item');
+  opt.tooltip.formatter = (p) => {
+    const d = new Date(p.value[0] + 'T00:00:00');
+    return `<b>${d.toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })}</b><br>` +
+      `${fmtNum(p.value[1])} messages<br>${dot(ui.sent)}${fmtNum(p.value[2])} sent &nbsp; ${dot(ui.recv)}${fmtNum(p.value[3])} received`;
+  };
+  opt.visualMap = {
+    min: 0,
+    max: Math.max(1, p95),
+    calculable: false,
+    orient: 'horizontal',
+    right: 12,
+    bottom: 0,
+    itemHeight: 140,
+    itemWidth: 10,
+    text: ['More', 'Less'],
+    textStyle: { color: ui.muted, fontSize: 11 },
+    inRange: { color: ui.heat },
+    dimension: 1,
+  };
+  opt.calendar = {
+    range: String(year),
+    top: 24,
+    left: 36,
+    right: 12,
+    bottom: 36,
+    cellSize: ['auto', 'auto'],
+    splitLine: { show: false },
+    itemStyle: { color: ui.empty, borderColor: ui.surface, borderWidth: 2 },
+    dayLabel: { firstDay: 0, color: ui.muted, fontSize: 10, nameMap: ['S', 'M', 'T', 'W', 'T', 'F', 'S'] },
+    monthLabel: { color: ui.muted, fontSize: 11 },
+    yearLabel: { show: false },
+  };
+  opt.series = [{
+    type: 'heatmap',
+    coordinateSystem: 'calendar',
+    data,
+    itemStyle: { borderColor: ui.surface, borderWidth: 2, borderRadius: 2 },
+  }];
+  return opt;
+}
+
+function splitOption(ui, A) {
+  const opt = baseOption(ui);
+  delete opt.grid;
+  opt.legend.top = 'auto';
+  opt.legend.bottom = 0;
+  opt.legend.left = 'center';
+  opt.tooltip = tooltipBase(ui, 'item');
+  opt.tooltip.formatter = (p) => `${dot(p.color)}<b>${p.name}</b><br>${fmtNum(p.value)} messages (${p.percent}%)`;
+  const total = A.dir[0] + A.dir[1];
+  opt.title = {
+    text: fmtNum(total),
+    subtext: 'messages',
+    left: 'center',
+    top: '36%',
+    textStyle: { color: ui.text, fontSize: 22, fontWeight: 600, fontFamily: FONT },
+    subtextStyle: { color: ui.muted, fontSize: 12 },
+    itemGap: 2,
+  };
+  opt.series = [{
+    type: 'pie',
+    radius: ['52%', '74%'],
+    center: ['50%', '45%'],
+    padAngle: 1.5,
+    itemStyle: { borderRadius: 4, borderColor: ui.surface, borderWidth: 2 },
+    label: { color: ui.text2, formatter: '{b}\n{d}%', fontSize: 12 },
+    labelLine: { lineStyle: { color: ui.axis } },
+    data: [
+      { name: 'Sent', value: A.dir[1], itemStyle: { color: ui.sent } },
+      { name: 'Received', value: A.dir[0], itemStyle: { color: ui.recv } },
+    ],
+  }];
+  return opt;
+}
+
+function shareOption(ui, A) {
+  const keys = [...A.months.keys()].sort((a, b) => a - b);
+  const data = keys.map((mo) => {
+    const c = A.months.get(mo).c;
+    const tot = c[0] + c[1];
+    return [monthToTs(mo), tot ? Math.round((c[1] / tot) * 1000) / 10 : null, tot];
+  });
+  const opt = baseOption(ui, { boxZoom: true });
+  delete opt.legend;
+  opt.grid.top = 28;
+  opt.xAxis = { type: 'time', axisLine: { lineStyle: { color: ui.axis } }, axisTick: { show: false }, axisLabel: { color: ui.muted, fontSize: 11, hideOverlap: true }, splitLine: { show: false } };
+  opt.yAxis = valAxis(ui, { min: 0, max: 100, axisLabel: { color: ui.muted, fontSize: 11, formatter: '{value}%' } });
+  opt.tooltip = tooltipBase(ui, 'axis', 'line');
+  opt.tooltip.formatter = (ps) => {
+    const p = ps[0];
+    const d = new Date(p.value[0]).toLocaleDateString(undefined, { year: 'numeric', month: 'long' });
+    return `<b>${d}</b><br>You sent <b>${p.value[1]}%</b> of ${fmtNum(p.value[2])} messages`;
+  };
+  opt.series = [line('% sent by you', data, ui.sent, {
+    showSymbol: data.length < 40,
+    areaStyle: { color: ui.sent, opacity: 0.08 },
+    markLine: {
+      silent: true,
+      symbol: 'none',
+      lineStyle: { color: ui.muted, type: 'dashed', width: 1 },
+      label: { color: ui.muted, formatter: 'even split', position: 'insideEndTop', fontSize: 11 },
+      data: [{ yAxis: 50 }],
+    },
+  })];
+  opt.dataZoom = [insideZoom({ xAxisIndex: 0 })];
+  return opt;
+}
+
+function lengthOption(ui, A) {
+  const labels = LEN_BINS.map(([a, b]) => (b === Infinity ? `${a}+` : `${a}–${b}`));
+  const pct = (arr) => {
+    const tot = arr.reduce((x, y) => x + y, 0) || 1;
+    return arr.map((v) => Math.round((v / tot) * 1000) / 10);
+  };
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = catAxis(ui, labels, { name: 'characters', nameLocation: 'middle', nameGap: 26, nameTextStyle: { color: ui.muted, fontSize: 11 } });
+  opt.yAxis = valAxis(ui, { axisLabel: { color: ui.muted, fontSize: 11, formatter: '{value}%' } });
+  opt.grid.bottom = 18;
+  const counts = [A.lenHist[1], A.lenHist[0]];
+  opt.tooltip.formatter = (ps) => {
+    let html = `<div style="font-weight:600;margin-bottom:4px">${ps[0].axisValueLabel} characters</div>`;
+    for (const p of ps) html += `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(p.color)}${p.seriesName}</span><span><b>${p.value}%</b> · ${fmtNum(counts[p.seriesIndex][p.dataIndex])}</span></div>`;
+    return html;
+  };
+  opt.series = [
+    bar('Sent', pct(A.lenHist[1]), ui.sent, ui),
+    bar('Received', pct(A.lenHist[0]), ui.recv, ui),
+  ];
+  return opt;
+}
+
+function lengthTrendOption(ui, A) {
+  const keys = [...A.months.keys()].sort((a, b) => a - b);
+  const mk = (o) => keys.map((mo) => {
+    const m = A.months.get(mo);
+    return [monthToTs(mo), m.lenN[o] ? Math.round((m.len[o] / m.lenN[o]) * 10) / 10 : null];
+  });
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = { type: 'time', axisLine: { lineStyle: { color: ui.axis } }, axisTick: { show: false }, axisLabel: { color: ui.muted, fontSize: 11, hideOverlap: true }, splitLine: { show: false } };
+  opt.yAxis = valAxis(ui, { name: 'avg characters', nameTextStyle: { color: ui.muted, fontSize: 11, align: 'left' } });
+  opt.tooltip = tooltipBase(ui, 'axis', 'line');
+  opt.tooltip.formatter = (ps) => {
+    const d = new Date(ps[0].value[0]).toLocaleDateString(undefined, { year: 'numeric', month: 'long' });
+    let html = `<div style="font-weight:600;margin-bottom:4px">${d}</div>`;
+    for (const p of ps) html += `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(p.color)}${p.seriesName}</span><b>${p.value[1] ?? '–'} chars</b></div>`;
+    return html;
+  };
+  opt.series = [line('Sent', mk(1), ui.sent, { connectNulls: true }), line('Received', mk(0), ui.recv, { connectNulls: true })];
+  opt.dataZoom = [insideZoom({ xAxisIndex: 0 })];
+  return opt;
+}
+
+function truncate(s, n) {
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+function topContactsOption(ui, rows) {
+  // rows: [{ key, label, s, r }] already sorted desc
+  const opt = sentRecvStack(ui, rows.map((x) => truncate(x.label, 24)), rows.map((x) => x.s), rows.map((x) => x.r), { horizontal: true });
+  opt.dataZoom = rows.length > 15 ? [insideZoom({ yAxisIndex: 0, startValue: 0, endValue: 14 }), sliderZoom(ui, { yAxisIndex: 0, orient: 'vertical', right: 0, top: 36, bottom: 8, width: 14, height: undefined, showDetail: false, showDataShadow: false })] : undefined;
+  if (opt.dataZoom) opt.grid.right = 26;
+  opt.tooltip.formatter = (ps) => {
+    ps.forEach((p) => (p.axisValueLabel = rows[p.dataIndex].label));
+    return stackTooltip(ps) + '<div style="color:#888;margin-top:4px;font-size:11px">Click to focus this conversation</div>';
+  };
+  return opt;
+}
+
+function emojiOption(ui, A, limit = 20) {
+  const rows = [...A.emojiFreq.entries()]
+    .map(([e, v]) => ({ e, r: v[0], s: v[1], t: v[0] + v[1] }))
+    .sort((a, b) => b.t - a.t)
+    .slice(0, limit);
+  const opt = sentRecvStack(ui, rows.map((x) => x.e), rows.map((x) => x.s), rows.map((x) => x.r), { horizontal: true });
+  opt.yAxis.axisLabel = { fontSize: 17, color: ui.text, fontFamily: '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif' };
+  return { opt, empty: rows.length === 0 };
+}
+
+function wordsOption(ui, A, limit = 25) {
+  const rows = [...A.wordFreq.entries()]
+    .map(([w, v]) => ({ w, r: v[0], s: v[1], t: v[0] + v[1] }))
+    .sort((a, b) => b.t - a.t)
+    .slice(0, limit);
+  return { opt: sentRecvStack(ui, rows.map((x) => x.w), rows.map((x) => x.s), rows.map((x) => x.r), { horizontal: true }), empty: rows.length === 0 };
+}
+
+function mediaOption(ui, A) {
+  const labels = MEDIA_TYPES.map((m) => m.label);
+  return sentRecvStack(ui, labels, MEDIA_TYPES.map((m) => A.media[m.key][1]), MEDIA_TYPES.map((m) => A.media[m.key][0]));
+}
+
+function mediaTrendOption(ui, A) {
+  const keys = [...A.mediaMonths.keys()].sort((a, b) => a - b);
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = { type: 'time', axisLine: { lineStyle: { color: ui.axis } }, axisTick: { show: false }, axisLabel: { color: ui.muted, fontSize: 11, hideOverlap: true }, splitLine: { show: false } };
+  opt.yAxis = valAxis(ui);
+  opt.tooltip = tooltipBase(ui, 'axis', 'shadow');
+  opt.tooltip.formatter = (ps) => {
+    ps.forEach((p) => (p.axisValueLabel = new Date(p.value[0]).toLocaleDateString(undefined, { year: 'numeric', month: 'long' })));
+    return stackTooltip(ps.filter((p) => p.value[1]));
+  };
+  opt.series = MEDIA_TYPES.map((m, i) => ({
+    ...bar(m.label, keys.map((mo) => [monthToTs(mo), A.mediaMonths.get(mo)[m.key]]), ui.series[i], ui, { stack: 'media', rounded: i === MEDIA_TYPES.length - 1 }),
+    barMaxWidth: 18,
+  }));
+  opt.dataZoom = [insideZoom({ xAxisIndex: 0 })];
+  return opt;
+}
+
+function replyOption(ui, A) {
+  const pct = (arr) => {
+    const tot = arr.reduce((x, y) => x + y, 0) || 1;
+    return arr.map((v) => Math.round((v / tot) * 1000) / 10);
+  };
+  const counts = [A.reply[1], A.reply[0]];
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = catAxis(ui, REPLY_BINS.map((b) => b.label));
+  opt.yAxis = valAxis(ui, { axisLabel: { color: ui.muted, fontSize: 11, formatter: '{value}%' } });
+  opt.tooltip.formatter = (ps) => {
+    let html = `<div style="font-weight:600;margin-bottom:4px">Replied within ${ps[0].axisValueLabel}</div>`;
+    for (const p of ps) html += `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(p.color)}${p.seriesName}</span><span><b>${p.value}%</b> · ${fmtNum(counts[p.seriesIndex][p.dataIndex])}</span></div>`;
+    return html;
+  };
+  opt.series = [bar('Your replies', pct(A.reply[1]), ui.sent, ui), bar('Their replies', pct(A.reply[0]), ui.recv, ui)];
+  return opt;
+}
+
+function behaviorOption(ui, A) {
+  const labels = ['Started convo', 'Double-texted', ...TRAITS.map((t) => t.label)];
+  const s = [A.starters[1], A.doubleTexts[1], ...A.traits[1]];
+  const r = [A.starters[0], A.doubleTexts[0], ...A.traits[0]];
+  const opt = baseOption(ui, { boxZoom: false });
+  opt.yAxis = catAxis(ui, labels, { inverse: true });
+  opt.xAxis = valAxis(ui);
+  opt.series = [bar('Sent', s, ui.sent, ui, { horizontal: true }), bar('Received', r, ui.recv, ui, { horizontal: true })];
+  opt.series.forEach((x) => (x.barMaxWidth = 12));
+  return opt;
+}
+
+// ------------------------------------------------------------------ call charts
+
+function callTrendOption(ui, C) {
+  const keys = [...C.months.keys()].sort((a, b) => a - b);
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = { type: 'time', axisLine: { lineStyle: { color: ui.axis } }, axisTick: { show: false }, axisLabel: { color: ui.muted, fontSize: 11, hideOverlap: true }, splitLine: { show: false } };
+  opt.yAxis = valAxis(ui);
+  opt.tooltip = tooltipBase(ui, 'axis', 'shadow');
+  opt.tooltip.formatter = (ps) => {
+    ps.forEach((p) => (p.axisValueLabel = new Date(p.value[0]).toLocaleDateString(undefined, { year: 'numeric', month: 'long' })));
+    return stackTooltip(ps.filter((p) => p.value[1]));
+  };
+  opt.series = CALL_TYPES.map((ct, i) => ({
+    ...bar(ct.label, keys.map((mo) => [monthToTs(mo), C.months.get(mo)[i]]), ui.series[i], ui, { stack: 'calls', rounded: i === CALL_TYPES.length - 1 }),
+    barMaxWidth: 18,
+  }));
+  opt.dataZoom = [insideZoom({ xAxisIndex: 0 }), sliderZoom(ui, { xAxisIndex: 0 })];
+  opt.grid.bottom = 40;
+  return opt;
+}
+
+function callHourOption(ui, C) {
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = catAxis(ui, HOUR_LABELS);
+  opt.yAxis = valAxis(ui);
+  opt.tooltip.formatter = (ps) => stackTooltip(ps.filter((p) => p.value));
+  opt.series = CALL_TYPES.map((ct, i) => bar(ct.label, C.hour[i], ui.series[i], ui, { stack: 'calls', rounded: i === CALL_TYPES.length - 1 }));
+  return opt;
+}
+
+function callDurOption(ui, C) {
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = catAxis(ui, CALL_DUR_BINS.map((b) => b.label));
+  opt.yAxis = valAxis(ui);
+  opt.series = [bar('Outgoing', C.durHist[1], ui.series[0], ui), bar('Incoming', C.durHist[0], ui.series[1], ui)];
+  return opt;
+}
+
+function callContactsOption(ui, rows) {
+  const opt = baseOption(ui);
+  delete opt.legend;
+  opt.grid.top = 28;
+  opt.yAxis = catAxis(ui, rows.map((x) => truncate(x.label, 24)), { inverse: true });
+  opt.xAxis = valAxis(ui, { axisLabel: { color: ui.muted, fontSize: 11, formatter: (v) => fmtDuration(v * 1000) } });
+  opt.tooltip.formatter = (ps) => {
+    const r = rows[ps[0].dataIndex];
+    return `<b>${r.label}</b><br>${fmtDuration(r.talk * 1000)} talk time<br>${fmtNum(r.n)} calls`;
+  };
+  opt.series = [bar('Talk time', rows.map((x) => x.talk), ui.series[0], ui, { horizontal: true })];
+  return opt;
+}

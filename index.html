@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Message Stats</title>
+  <meta name="description" content="Charts and statistics for SMS Backup & Restore XML backups, processed entirely in your browser.">
+  <link rel="stylesheet" href="css/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm3 9v2h2v-2H7Zm4-4v6h2V9h-2Zm4-2v8h2V7h-2Z"/></svg>
+      Message Stats
+    </div>
+    <span class="tagline">for SMS Backup &amp; Restore files</span>
+    <div class="spacer"></div>
+    <button id="themeBtn" class="btn ghost" data-mode="auto" title="Switch color theme">◐ Auto</button>
+  </header>
+
+  <!-- ============================================================ landing -->
+  <section id="landing">
+    <div id="drop" class="dropzone">
+      <h1>See the patterns in your texts</h1>
+      <p>Open the XML backup from <b>SMS Backup &amp; Restore</b> (<code>sms-….xml</code>, and optionally <code>calls-….xml</code>). You can pick several files; duplicates are merged.</p>
+      <div class="actions">
+        <label class="btn primary">Choose backup files<input type="file" id="fileInput" accept=".xml,text/xml" multiple hidden></label>
+        <button class="btn" id="demoBtn">Try demo data</button>
+      </div>
+      <p class="hint">or drop files anywhere on this page</p>
+      <p class="privacy">🔒 Everything runs in your browser. Your messages are never uploaded anywhere.</p>
+      <p id="loadError" class="error" hidden></p>
+    </div>
+    <div id="progress" class="progress" hidden>
+      <div class="track"><div id="progressBar"></div></div>
+      <p id="progressText">Starting…</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ dashboard -->
+  <main id="dash" hidden>
+    <div class="filters">
+      <label class="field grow">
+        <span>Conversation</span>
+        <select id="contactSel"></select>
+      </label>
+      <label class="check"><input type="checkbox" id="groupsChk" checked> Include group chats</label>
+      <div class="field">
+        <span>Date range</span>
+        <div class="dates">
+          <input type="date" id="fromDate" aria-label="From date">
+          <span class="dash-sep">–</span>
+          <input type="date" id="toDate" aria-label="To date">
+        </div>
+      </div>
+      <div class="seg" id="presets" role="group" aria-label="Date presets">
+        <button data-preset="all">All</button>
+        <button data-preset="365">Last year</button>
+        <button data-preset="90">90 days</button>
+        <button data-preset="30">30 days</button>
+      </div>
+      <label class="btn small" title="Add more backup files (duplicates are merged)">+ Add files<input type="file" id="addInput" accept=".xml,text/xml" multiple hidden></label>
+    </div>
+    <p class="scope"><span id="scope"></span> <span class="files" id="fileInfo"></span></p>
+
+    <section class="kpis" id="kpis" aria-label="Summary"></section>
+
+    <section class="grid">
+      <article class="card wide">
+        <header>
+          <div>
+            <h2>Messages over time</h2>
+            <p class="sub">Drag the slider, or pinch / ctrl+scroll to zoom. Everything below follows the zoomed range.</p>
+          </div>
+          <div class="seg" id="granSeg" role="group" aria-label="Granularity">
+            <button data-gran="auto">Auto</button>
+            <button data-gran="day">Day</button>
+            <button data-gran="week">Week</button>
+            <button data-gran="month">Month</button>
+          </div>
+        </header>
+        <div class="chart tall" id="c-timeline"></div>
+      </article>
+
+      <article class="card">
+        <header><div><h2>Hour of day</h2><p class="sub">Which hours you text the most</p></div></header>
+        <div class="chart" id="c-hour"></div>
+      </article>
+
+      <article class="card">
+        <header><div><h2>Day of week</h2><p class="sub">Which days are the busiest</p></div></header>
+        <div class="chart" id="c-dow"></div>
+      </article>
+
+      <article class="card wide">
+        <header><div><h2>Weekly rhythm</h2><p class="sub">Messages by weekday and hour</p></div></header>
+        <div class="chart" id="c-heat"></div>
+      </article>
+
+      <article class="card wide">
+        <header>
+          <div><h2>Daily activity calendar</h2><p class="sub">Each square is one day</p></div>
+          <div class="seg" id="calYears" role="group" aria-label="Year"></div>
+        </header>
+        <div class="chart cal" id="c-calendar"></div>
+      </article>
+
+      <article class="card">
+        <header><div><h2>Sent vs received</h2><p class="sub">Overall split</p></div></header>
+        <div class="chart" id="c-split"></div>
+      </article>
+
+      <article class="card">
+        <header><div><h2>Who's carrying the conversation</h2><p class="sub">Share of messages you sent, per month</p></div></header>
+        <div class="chart" id="c-share"></div>
+      </article>
+
+      <article class="card">
+        <header><div><h2>Message length</h2><p class="sub">Share of messages by length (reactions excluded)</p></div></header>
+        <div class="chart" id="c-length"></div>
+      </article>
+
+      <article class="card">
+        <header><div><h2>Average length over time</h2><p class="sub">Characters per message, by month</p></div></header>
+        <div class="chart" id="c-length-trend"></div>
+      </article>
+
+      <article class="card">
+        <header><div><h2>Top conversations</h2><p class="sub" id="contactsNote"></p></div></header>
+        <div class="chart tall" id="c-contacts"></div>
+      </article>
+
+      <article class="card">
+        <header><div><h2>Top emoji</h2><p class="sub">Most-used emoji, sent and received</p></div></header>
+        <div class="chart tall" id="c-emoji"></div>
+      </article>
+
+      <article class="card">
+        <header><div><h2>Pictures, videos &amp; attachments</h2><p class="sub">MMS attachments by type</p></div></header>
+        <div class="chart" id="c-media"></div>
+      </article>
+
+      <article class="card">
+        <header><div><h2>Attachments over time</h2><p class="sub">Per month, by type</p></div></header>
+        <div class="chart" id="c-media-trend"></div>
+      </article>
+
+      <article class="card">
+        <header><div><h2>Reply speed</h2><p class="sub">How quickly each side answers (within 24h)</p></div></header>
+        <div class="chart" id="c-reply"></div>
+      </article>
+
+      <article class="card">
+        <header><div><h2>Texting habits</h2><p class="sub">Conversation starters (after 6h of quiet), double texts and message traits</p></div></header>
+        <div class="chart" id="c-behavior"></div>
+      </article>
+
+      <article class="card wide">
+        <header><div><h2>Most-used words</h2><p class="sub">Common filler words are left out</p></div></header>
+        <div class="chart tall" id="c-words"></div>
+      </article>
+    </section>
+
+    <section id="callsSection" hidden>
+      <h2 class="section-title">Calls</h2>
+      <section class="kpis" id="callKpis"></section>
+      <section class="grid">
+        <article class="card wide">
+          <header><div><h2>Calls over time</h2><p class="sub">Per month, by outcome</p></div></header>
+          <div class="chart" id="c-call-trend"></div>
+        </article>
+        <article class="card">
+          <header><div><h2>Calls by hour</h2><p class="sub">When calls happen</p></div></header>
+          <div class="chart" id="c-call-hour"></div>
+        </article>
+        <article class="card">
+          <header><div><h2>Call length</h2><p class="sub">Connected calls by duration</p></div></header>
+          <div class="chart" id="c-call-dur"></div>
+        </article>
+        <article class="card wide">
+          <header><div><h2>Most talk time</h2><p class="sub">Total minutes on the phone, by person</p></div></header>
+          <div class="chart" id="c-call-contacts"></div>
+        </article>
+      </section>
+    </section>
+
+    <section class="card wide browser">
+      <header>
+        <div><h2>Messages</h2><p class="sub" id="browserCount"></p></div>
+        <input type="search" id="search" placeholder="Search messages…" aria-label="Search messages">
+      </header>
+      <button class="btn small more" id="moreBtn" hidden>Show earlier messages</button>
+      <div class="messages" id="messages"></div>
+    </section>
+  </main>
+
+  <div class="drop-overlay" aria-hidden="true"><div>Drop backup files to load them</div></div>
+
+  <script src="js/parser.js"></script>
+  <script src="js/demo.js"></script>
+  <script src="js/analysis.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
