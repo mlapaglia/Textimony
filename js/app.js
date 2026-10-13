@@ -557,6 +557,9 @@ function refresh({ timeline = true } = {}) {
 
   renderCalls(ui);
   renderBrowser(msgs);
+  // Attachments panel: shown when the selection has any; built once it's near the screen.
+  show('#galleryCard', anyMedia);
+  if (anyMedia) lazyRender('#galleryCard', () => renderGallery(msgs));
   wireCharts();
 }
 
@@ -713,7 +716,7 @@ function observeLazySections() {
       }
     }
   }, { rootMargin: '600px 0px' });
-  for (const sel of ['#sec-content', '#sec-wrapped']) Lazy.observer.observe($(sel));
+  for (const sel of ['#sec-content', '#sec-wrapped', '#galleryCard']) Lazy.observer.observe($(sel));
 }
 
 // ---- year in review (canvas)
@@ -1026,137 +1029,14 @@ function renderCalls(ui) {
 
 // ------------------------------------------------------------------ message browser
 
-// ------------------------------------------------------------------ attachments in the message list
-//
-// Attachments that point into a loaded zip (att.z) are read only when their bubble
-// scrolls into view, shown from an object URL, and released on the next re-render.
-
-const MIME = {
-  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
-  heic: 'image/heic', heif: 'image/heif', svg: 'image/svg+xml',
-  mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', '3gp': 'video/3gpp',
-  mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', opus: 'audio/ogg', wav: 'audio/wav', amr: 'audio/amr',
-  pdf: 'application/pdf',
-};
-const ATT_ICON = { ph: '📷', gf: '🎞️', vd: '🎬', au: '🎤', ot: '📎' };
-const Media = { urls: [], observer: null, zip: null };
-
-function mimeOf(name) {
-  const dot = name.lastIndexOf('.');
-  return MIME[dot >= 0 ? name.slice(dot + 1).toLowerCase() : ''] || '';
-}
-
-/** Placeholder for one attachment; loads the real thing when it scrolls into view. */
-function attachmentEl(a) {
-  const el = document.createElement('div');
-  const loadable = a.z != null && S.archives[a.z];
-  el.className = `media media-${a.k}${loadable ? ' loading' : ' missing'}`;
-  el.textContent = `${ATT_ICON[a.k] || '📎'} ${a.n}`;
-  if (!loadable) {
-    el.title = 'This file is not in the loaded export';
-    return el;
-  }
-  el._att = a;
-  Media.observer.observe(el);
-  return el;
-}
-
-/** The attachment's bytes: base64 inside an SMS backup (att.b/att.l) or an entry in a zip. */
-async function attachmentBlob(a, type) {
-  const file = S.archives[a.z];
-  if (a.b != null) {
-    const b64 = (await file.slice(a.b, a.b + a.l).text()).replace(/&#(?:10|13);|\s/g, '');
-    const res = await fetch(`data:${type || 'application/octet-stream'};base64,${b64}`);
-    return res.blob();
-  }
-  Media.zip = Media.zip || zipLib();
-  return Media.zip.readEntryBlob({ file, offset: a.o, csize: a.c, method: a.m, name: a.p }, type);
-}
-
-async function loadAttachment(el) {
-  const a = el._att;
-  const type = (a.t && a.t !== 'application/octet-stream' ? a.t : '') || mimeOf(a.n) || mimeOf(a.p || '');
-  let url;
-  try {
-    const blob = await attachmentBlob(a, type);
-    url = URL.createObjectURL(blob);
-    Media.urls.push(url);
-  } catch (err) {
-    console.warn('Could not read attachment', a.n, err);
-    el.className = `media media-${a.k} missing`;
-    el.title = 'Could not read this file from the export';
-    return;
-  }
-  if (!el.isConnected) return;
-  const fallback = () => {
-    // The browser can't show this format (e.g. HEIC in Chrome): offer the file instead.
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = a.n;
-    link.textContent = `${ATT_ICON[a.k] || '📎'} ${a.n} · ${fmtBytes(a.u)} · download`;
-    el.className = `media media-${a.k} file`;
-    el.replaceChildren(link);
-  };
-  el.classList.remove('loading');
-  if (type.startsWith('image/')) {
-    const img = new Image();
-    img.alt = a.n;
-    img.decoding = 'async';
-    img.onerror = fallback;
-    img.onclick = () => openLightbox(url, a.n);
-    img.src = url;
-    el.replaceChildren(img);
-  } else if (type.startsWith('video/')) {
-    const video = document.createElement('video');
-    video.controls = true;
-    video.preload = 'metadata';
-    video.playsInline = true;
-    video.onerror = fallback;
-    video.src = url;
-    el.replaceChildren(video);
-  } else if (type.startsWith('audio/')) {
-    const audio = document.createElement('audio');
-    audio.controls = true;
-    audio.preload = 'metadata';
-    audio.onerror = fallback;
-    audio.src = url;
-    el.replaceChildren(audio);
-  } else {
-    fallback();
-  }
-}
-
-/** Release the previous render's object URLs and start watching for a new set of attachments. */
-function resetMedia(root) {
-  for (const url of Media.urls) URL.revokeObjectURL(url);
-  Media.urls = [];
-  if (Media.observer) Media.observer.disconnect();
-  Media.observer = new IntersectionObserver((entries) => {
-    for (const e of entries) {
-      if (!e.isIntersecting) continue;
-      Media.observer.unobserve(e.target);
-      loadAttachment(e.target);
-    }
-  }, { root, rootMargin: '400px 0px' });
-}
-
-function openLightbox(url, name) {
-  const dlg = $('#lightbox');
-  const img = dlg.querySelector('img');
-  img.src = url;
-  img.alt = name;
-  dlg.querySelector('.caption').textContent = name;
-  dlg.showModal();
-}
-
 function renderBrowser(msgs) {
   const q = S.browserQuery.trim().toLowerCase();
   const list = q ? msgs.filter((m) => m.b && m.b.toLowerCase().includes(q)) : msgs;
   const start = Math.max(0, list.length - S.browserLimit);
   const shown = list.slice(start);
   const box = $('#messages');
+  resetMessageMedia(box);
   box.innerHTML = '';
-  resetMedia(box);
   $('#browserCount').textContent = `${fmtNum(list.length)} message${list.length === 1 ? '' : 's'}${q ? ' matching' : ''} · showing latest ${fmtNum(shown.length)}`;
   $('#moreBtn').hidden = start === 0;
 
@@ -1190,12 +1070,7 @@ function renderBrowser(msgs) {
       body.textContent = m.b;
       bubble.appendChild(body);
     }
-    if (m.att) {
-      const media = document.createElement('div');
-      media.className = 'media-list';
-      for (const a of m.att) media.appendChild(attachmentEl(a));
-      bubble.appendChild(media);
-    }
+    if (m.att) bubble.appendChild(messageAttachments(m));
     // Sources without attachment references only know how many there were.
     const att = [];
     if (!m.att) {
@@ -1319,7 +1194,8 @@ function init() {
     if (li) setContact(li.dataset.key);
   };
   $('#wrapSave').onclick = saveWrapped;
-  $('#lightbox').onclick = () => $('#lightbox').close();
+  initViewer();
+  initGallery();
   observeLazySections();
 
   $('#search').oninput = (e) => {
