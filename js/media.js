@@ -193,18 +193,19 @@ async function makeThumb(a, heic = false) {
   const blob = await attachmentBlob(a, type);
   if (type.startsWith('image/')) {
     const opts = { resizeWidth: THUMB_WIDTH, resizeQuality: 'medium' };
-    let bmp;
+    let jpg;
     if (heic) {
-      bmp = await decodeHeic(blob, opts);
+      jpg = await heicToJpeg(blob, opts, 0.8);
     } else {
+      let bmp;
       try {
         bmp = await createImageBitmap(blob, opts);
       } catch (err) {
         if (await sniffHeic(blob)) return HEIC_LATER;
         throw err;
       }
+      jpg = await bitmapToJpeg(bmp, 0.8);
     }
-    const jpg = await bitmapToJpeg(bmp, 0.8);
     return jpg && URL.createObjectURL(jpg);
   }
   return videoFrame(blob);
@@ -219,7 +220,7 @@ async function makeThumb(a, heic = false) {
 const HEIC_TO_URL = 'https://cdn.jsdelivr.net/npm/heic-to@1.6.5/dist/iife/heic-to.js';
 const HEIC_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1']);
 let heicLib = null; // Promise of the HeicTo function
-let heicQueue = Promise.resolve(); // one full-size decode in memory at a time
+let heicQueue = Promise.resolve(); // one HEIC converting at a time, decode through JPEG
 
 const heicLike = (type) => type === 'image/heic' || type === 'image/heif';
 
@@ -246,20 +247,25 @@ async function sniffHeic(blob) {
   return head.startsWith('ftyp') && HEIC_BRANDS.has(head.slice(4));
 }
 
-/** Decodes an image, natively when the browser can, else with heic-to if it's HEIC. */
-async function decodeImage(blob, opts) {
+/** An image as a JPEG blob, decoded natively when the browser can, else with heic-to if it's HEIC. */
+async function imageToJpeg(blob, opts, quality) {
+  let bmp;
   try {
-    return await createImageBitmap(blob, opts);
+    bmp = await createImageBitmap(blob, opts);
   } catch (err) {
     if (!(await sniffHeic(blob))) throw err;
+    return heicToJpeg(blob, opts, quality);
   }
-  return decodeHeic(blob, opts);
+  return bitmapToJpeg(bmp, quality);
 }
 
-/** Decodes a HEIC photo with heic-to. */
-async function decodeHeic(blob, opts) {
+/**
+ * A HEIC photo as a JPEG blob, via heic-to. Conversions run strictly one after
+ * another, so only one full-size image is ever held in memory.
+ */
+async function heicToJpeg(blob, opts, quality) {
   const HeicTo = await loadHeicTo();
-  const job = heicQueue.then(() => HeicTo({ blob, type: 'bitmap', options: opts }));
+  const job = heicQueue.then(async () => bitmapToJpeg(await HeicTo({ blob, type: 'bitmap', options: opts }), quality));
   heicQueue = job.catch(() => {});
   return job;
 }
@@ -466,7 +472,7 @@ const Viewer = {
       }
       let jpg = null;
       try {
-        jpg = await bitmapToJpeg(await decodeImage(blob), 0.92);
+        jpg = await imageToJpeg(blob, undefined, 0.92);
       } catch (err) { /* shown below */ }
       if (token !== this.token) return;
       if (!jpg) { download("Couldn't convert this HEIC photo."); return; }
