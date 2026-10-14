@@ -72,6 +72,11 @@ const Thumbs = {
   failed: new Set(), // attKey of attachments that can't be previewed
   queue: [], // { a, resolve } waiting for a slot
   active: 0,
+  // HEIC the browser can't decode waits here until the queue above is empty, then
+  // converts one at a time (heic-to has a single worker anyway).
+  heicQueue: [],
+  heicActive: false,
+  converting: new Set(), // attKey of HEIC waiting for or being converted
   wants: new Map(), // attKey -> number of tiles currently near the screen that want it
 
   want(a, d) {
@@ -109,16 +114,46 @@ const Thumbs = {
       makeThumb(job.a)
         .catch(() => null)
         .then((url) => {
+          if (url !== HEIC_LATER) { this.finish(job, url); return; }
           const key = attKey(job.a);
-          if (url) this.put(key, url);
-          else this.failed.add(key);
-          job.resolve(url);
+          this.converting.add(key);
+          for (const tile of document.querySelectorAll(`.tile[data-key="${key}"]`)) if (tile._wanted) tile.classList.add('converting');
+          this.heicQueue.push(job);
         })
         .finally(() => {
           this.active--;
           this.pump();
         });
     }
+    this.pumpHeic();
+  },
+
+  pumpHeic() {
+    if (this.heicActive || this.active || this.queue.length) return;
+    while (this.heicQueue.length) {
+      const job = this.heicQueue.pop(); // newest first, as above
+      const key = attKey(job.a);
+      if (!this.wants.has(key)) { this.converting.delete(key); job.resolve(null); continue; }
+      this.heicActive = true;
+      makeThumb(job.a, true)
+        .catch(() => null)
+        .then((url) => {
+          this.converting.delete(key);
+          this.finish(job, url);
+        })
+        .finally(() => {
+          this.heicActive = false;
+          this.pump();
+        });
+      return;
+    }
+  },
+
+  finish(job, url) {
+    const key = attKey(job.a);
+    if (url) this.put(key, url);
+    else this.failed.add(key);
+    job.resolve(url);
   },
 
   put(key, url) {
@@ -136,21 +171,97 @@ function canvasToUrl(canvas) {
   return new Promise((resolve) => canvas.toBlob((b) => resolve(b ? URL.createObjectURL(b) : null), 'image/jpeg', 0.8));
 }
 
+/** Encodes a decoded image as a JPEG blob (null if the browser can't), closing the bitmap. */
+async function bitmapToJpeg(bmp, quality) {
+  const canvas = document.createElement('canvas');
+  canvas.width = bmp.width;
+  canvas.height = bmp.height;
+  canvas.getContext('2d').drawImage(bmp, 0, 0);
+  bmp.close();
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+  canvas.width = canvas.height = 1; // free the pixels now rather than at GC
+  return blob;
+}
+
+/** What makeThumb returns for HEIC the browser can't decode: convert it with `heic` set. */
+const HEIC_LATER = Symbol('heic');
+
 /** Small JPEG preview of an image (first frame for GIFs) or a frame of a video. */
-async function makeThumb(a) {
+async function makeThumb(a, heic = false) {
   const type = attType(a);
   if (!type.startsWith('image/') && !type.startsWith('video/')) return null;
   const blob = await attachmentBlob(a, type);
   if (type.startsWith('image/')) {
-    const bmp = await createImageBitmap(blob, { resizeWidth: THUMB_WIDTH, resizeQuality: 'medium' });
-    const canvas = document.createElement('canvas');
-    canvas.width = bmp.width;
-    canvas.height = bmp.height;
-    canvas.getContext('2d').drawImage(bmp, 0, 0);
-    bmp.close();
-    return canvasToUrl(canvas);
+    const opts = { resizeWidth: THUMB_WIDTH, resizeQuality: 'medium' };
+    let bmp;
+    if (heic) {
+      bmp = await decodeHeic(blob, opts);
+    } else {
+      try {
+        bmp = await createImageBitmap(blob, opts);
+      } catch (err) {
+        if (await sniffHeic(blob)) return HEIC_LATER;
+        throw err;
+      }
+    }
+    const jpg = await bitmapToJpeg(bmp, 0.8);
+    return jpg && URL.createObjectURL(jpg);
   }
   return videoFrame(blob);
+}
+
+// ------------------------------------------------------------------ HEIC
+
+/*
+ * iPhone photos. Only Safari decodes HEIC itself; elsewhere heic-to (libheif in its
+ * own worker, ~3 MB) is fetched the first time a HEIC photo needs decoding.
+ */
+const HEIC_TO_URL = 'https://cdn.jsdelivr.net/npm/heic-to@1.6.5/dist/iife/heic-to.js';
+const HEIC_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1']);
+let heicLib = null; // Promise of the HeicTo function
+let heicQueue = Promise.resolve(); // one full-size decode in memory at a time
+
+const heicLike = (type) => type === 'image/heic' || type === 'image/heif';
+
+function loadHeicTo() {
+  heicLib = heicLib || new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = HEIC_TO_URL;
+    s.onload = () => (window.HeicTo ? resolve(window.HeicTo) : reject(new Error('heic-to did not load')));
+    s.onerror = () => {
+      s.remove();
+      reject(new Error('Could not load heic-to'));
+    };
+    document.head.appendChild(s);
+  }).catch((err) => {
+    heicLib = null; // let a later photo retry
+    throw err;
+  });
+  return heicLib;
+}
+
+/** Whether the file is HEIC/HEIF, from its ftyp brand (whatever its name says). */
+async function sniffHeic(blob) {
+  const head = new TextDecoder().decode(await blob.slice(4, 12).arrayBuffer());
+  return head.startsWith('ftyp') && HEIC_BRANDS.has(head.slice(4));
+}
+
+/** Decodes an image, natively when the browser can, else with heic-to if it's HEIC. */
+async function decodeImage(blob, opts) {
+  try {
+    return await createImageBitmap(blob, opts);
+  } catch (err) {
+    if (!(await sniffHeic(blob))) throw err;
+  }
+  return decodeHeic(blob, opts);
+}
+
+/** Decodes a HEIC photo with heic-to. */
+async function decodeHeic(blob, opts) {
+  const HeicTo = await loadHeicTo();
+  const job = heicQueue.then(() => HeicTo({ blob, type: 'bitmap', options: opts }));
+  heicQueue = job.catch(() => {});
+  return job;
 }
 
 /** Grab a frame from early in a video; gives up after a few seconds. */
@@ -214,6 +325,7 @@ function makeTile(a, cls, observer, onOpen) {
     return tile;
   }
   tile._att = a;
+  tile.dataset.key = attKey(a);
   tile.onclick = onOpen;
   observer.observe(tile);
   return tile;
@@ -228,8 +340,10 @@ function tileObserver(root) {
       if (e.isIntersecting) {
         if (!tile._wanted) Thumbs.want(a, 1);
         tile._wanted = true;
+        tile.classList.toggle('converting', Thumbs.converting.has(attKey(a)));
         Thumbs.get(a).then((url) => {
           if (!tile._wanted || !tile.isConnected) return;
+          tile.classList.remove('converting');
           if (!url) { tile.classList.add('no-preview'); return; }
           let img = tile.querySelector('img');
           if (!img) {
@@ -246,7 +360,7 @@ function tileObserver(root) {
         tile._wanted = false;
         const img = tile.querySelector('img');
         if (img) img.remove(); // lets the browser free the decoded image
-        tile.classList.remove('loaded');
+        tile.classList.remove('loaded', 'converting');
       }
     }
   }, { root, rootMargin: '300px 0px' });
@@ -258,7 +372,7 @@ function tileObserver(root) {
 const Viewer = {
   items: [], // [{ a, m }]
   index: 0,
-  url: null,
+  urls: [], // object URLs of the item on screen
   token: 0,
 
   open(items, index) {
@@ -278,8 +392,8 @@ const Viewer = {
     const stage = $('#viewer .viewer-stage');
     for (const el of stage.querySelectorAll('video, audio')) { el.pause(); el.removeAttribute('src'); el.load(); }
     stage.replaceChildren();
-    if (this.url) URL.revokeObjectURL(this.url);
-    this.url = null;
+    for (const url of this.urls) URL.revokeObjectURL(url);
+    this.urls = [];
   },
 
   step(d) {
@@ -310,24 +424,73 @@ const Viewer = {
       return;
     }
     if (token !== this.token) return; // moved on while loading
-    this.url = URL.createObjectURL(blob);
-    const url = this.url;
-    const download = () => {
+    const objectUrl = (b) => {
+      const u = URL.createObjectURL(b);
+      this.urls.push(u);
+      return u;
+    };
+    const url = objectUrl(blob);
+    const fileLink = (href, filename, text) => {
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = filename;
+      link.textContent = text;
+      return link;
+    };
+    const links = document.createElement('span');
+    caption.append(links);
+    const download = (note = "Your browser can't show this file type.") => {
+      links.replaceChildren(); // the box has its own link
       const box = document.createElement('div');
       box.className = 'viewer-file';
-      box.innerHTML = `<div class="viewer-file-icon">${ATT_ICON[a.k] || '📎'}</div><div>${escapeHtml(a.n)} · ${fmtBytes(blob.size)}</div><div class="viewer-file-note">Your browser can't show this file type.</div>`;
-      const link = document.createElement('a');
+      box.innerHTML = `<div class="viewer-file-icon">${ATT_ICON[a.k] || '📎'}</div><div>${escapeHtml(a.n)} · ${fmtBytes(blob.size)}</div><div class="viewer-file-note">${escapeHtml(note)}</div>`;
+      const link = fileLink(url, a.n, 'Download');
       link.className = 'btn small';
-      link.href = url;
-      link.download = a.n;
-      link.textContent = 'Download';
       box.appendChild(link);
       stage.replaceChildren(box);
     };
+    // HEIC: show the preview (if cached) while converting to a full-size JPG.
+    const showJpeg = async () => {
+      const status = document.createElement('div');
+      status.className = 'viewer-status';
+      status.innerHTML = '<span class="spinner"></span>Converting to JPG…';
+      const preview = Thumbs.cache.get(attKey(a));
+      if (preview) {
+        const img = new Image();
+        img.className = 'viewer-preview';
+        img.alt = a.n;
+        img.src = preview;
+        stage.replaceChildren(img, status);
+      } else {
+        stage.replaceChildren(status);
+      }
+      let jpg = null;
+      try {
+        jpg = await bitmapToJpeg(await decodeImage(blob), 0.92);
+      } catch (err) { /* shown below */ }
+      if (token !== this.token) return;
+      if (!jpg) { download("Couldn't convert this HEIC photo."); return; }
+      const img = new Image();
+      img.alt = a.n;
+      img.src = objectUrl(jpg);
+      stage.replaceChildren(img);
+      const jpgName = `${a.n.replace(/\.[^.]*$/, '')}.jpg`;
+      links.replaceChildren(' · ', fileLink(img.src, jpgName, 'Download JPG'), ' · ', fileLink(url, a.n, 'Download original'));
+    };
+    if (heicLike(type)) {
+      showJpeg();
+      return;
+    }
     let el;
     if (type.startsWith('image/')) {
       el = new Image();
       el.alt = a.n;
+      // A HEIC photo under another name: convert it too.
+      el.onerror = async () => {
+        if (await sniffHeic(blob).catch(() => false)) {
+          if (token === this.token) showJpeg();
+        } else if (token === this.token) download();
+      };
     } else if (type.startsWith('video/')) {
       el = document.createElement('video');
       el.controls = true;
@@ -341,14 +504,10 @@ const Viewer = {
       download();
       return;
     }
-    el.onerror = download;
+    el.onerror = el.onerror || (() => download());
     el.src = url;
     stage.replaceChildren(el);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = a.n;
-    link.textContent = 'Download';
-    caption.append(' · ', link);
+    links.replaceChildren(' · ', fileLink(url, a.n, 'Download'));
   },
 };
 

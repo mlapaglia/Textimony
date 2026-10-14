@@ -17,6 +17,8 @@ All processing occurs in the browser, your data is never uploaded anywhere!
 ## Credits
 Mood scores come from [VADER](https://github.com/cjhutto/vaderSentiment) (Hutto & Gilbert, 2014) via its JavaScript port [vaderSentiment-js](https://github.com/vaderSentiment/vaderSentiment-js), © Comcast, Apache-2.0. A copy lives in `js/vendor/` with its license and notice.
 
+HEIC photos are converted in browsers that can't show them by [heic-to](https://github.com/hoppergee/heic-to) (LGPL-3.0), built on [libheif](https://github.com/strukturag/libheif) (LGPL-3.0). It is loaded unmodified from jsDelivr, and only when a HEIC photo needs converting.
+
 ## Demo
 Navigate to https://yapalytics.online and click "Try Demo Data".
 
