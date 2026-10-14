@@ -517,12 +517,30 @@ const Viewer = {
   },
 };
 
+/**
+ * Whether a point is on the picture itself. Viewer images fill the stage with
+ * object-fit: contain, so the element also covers the empty bands around the picture.
+ */
+function onPicture(img, x, y) {
+  if (!img.naturalWidth) return true; // not drawn yet: don't treat as empty space
+  const r = img.getBoundingClientRect();
+  const scale = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight);
+  const w = img.naturalWidth * scale;
+  const h = img.naturalHeight * scale;
+  const left = r.left + (r.width - w) / 2;
+  const top = r.top + (r.height - h) / 2;
+  return x >= left && x <= left + w && y >= top && y <= top + h;
+}
+
 function initViewer() {
   const dlg = $('#viewer');
   dlg.addEventListener('close', () => Viewer.release());
   dlg.addEventListener('click', (e) => {
-    // Clicks on the dimmed backdrop (the dialog itself) or the empty stage close it.
-    if (e.target === dlg || e.target.classList.contains('viewer-stage')) Viewer.close();
+    // Any click off the picture closes it, except on controls, players and the download box.
+    const t = e.target;
+    if (t.closest('button, a, video, audio, .viewer-file')) return;
+    if (t.tagName === 'IMG' && onPicture(t, e.clientX, e.clientY)) return;
+    Viewer.close();
   });
   dlg.querySelector('.prev').onclick = () => Viewer.step(-1);
   dlg.querySelector('.next').onclick = () => Viewer.step(1);
