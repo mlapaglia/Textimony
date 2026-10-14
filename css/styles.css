@@ -315,6 +315,19 @@ table.leader .muted { color: var(--muted); }
 .browser { margin-top: 16px; }
 .browser input[type="search"] { width: min(320px, 100%); }
 
+/* Vocabulary: new words of the picked month */
+.vocab-words { margin-top: 8px; font-size: 13px; }
+.vocab-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.vocab-words .muted { color: var(--muted); }
+.vocab-head .muted { font-size: 12px; }
+.vocab-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.vocab-col { min-width: 0; padding: 8px 10px; border-radius: 10px; background: var(--surface-2); border-left: 3px solid var(--series-2); }
+.vocab-col.sent { border-left-color: var(--series-1); }
+.vocab-col-head { margin-bottom: 6px; color: var(--text-2); font-size: 12px; }
+.vocab-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.vocab-chip { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.vocab-chip:hover { border-color: var(--accent); color: var(--accent); }
+
 /* Word tracker */
 #phraseInput { width: min(320px, 100%); }
 .phrase-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }

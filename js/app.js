@@ -6,6 +6,7 @@ const S = {
   contacts: new Map(), // key -> { key, name, addr, group, lastT, s, label }
   seenMsgs: new Set(),
   seenCalls: new Set(),
+  reactions: 0, // reactions sent as texts, left out of the messages
   files: [],
   filter: { contact: 'all', source: 'all', groups: true, people: [], from: null, to: null },
   peopleKeys: null, // Set of thread keys matching filter.people, or null when not filtering
@@ -19,6 +20,7 @@ const S = {
   wrapYear: null,
   gran: 'auto',
   activeGran: 'month',
+  convoGap: CONVO_GAP, // silence that ends a conversation (picked on the Conversation length card)
   calYear: null,
   topRows: [],
   callRows: [],
@@ -26,6 +28,8 @@ const S = {
   browserQuery: '',
   phrase: '', // word tracker query
   phraseGran: 'auto', // word tracker bars: auto / day / week / month
+  vocab: null, // aggregateContent result behind the Vocabulary card
+  vocabMo: null, // month picked on the Vocabulary chart (null = the latest)
   phraseMsgs: [], // the selection the word tracker searches
   ui: null,
 };
@@ -103,6 +107,9 @@ async function loadFiles(fileList) {
             const key = `${m.t}|${hasOwner(m.s) ? m.sn : m.o}|${m.k}|${m.l}|${m.m}`;
             if (S.seenMsgs.has(key)) continue;
             S.seenMsgs.add(key);
+            // Reactions sent as texts (tapbacks, "😂 to “…”") aren't messages; the other
+            // exports leave reactions out entirely.
+            if (m.f & T_REACTION) { S.reactions++; continue; }
             if (m.att && job.attBase) for (const a of m.att) if (a.z != null) a.z += job.attBase;
             S.msgs.push(m);
           }
@@ -340,7 +347,8 @@ function populateContacts() {
     b.hidden = b.dataset.source !== 'all' && !present.has(+b.dataset.source);
     b.classList.toggle('on', b.dataset.source === String(source));
   });
-  $('#fileInfo').textContent = S.files.map((f) => f.name).join(', ');
+  $('#fileInfo').textContent = S.files.map((f) => f.name).join(', ') +
+    (S.reactions ? ` · ${fmtNum(S.reactions)} reaction${S.reactions === 1 ? '' : 's'} (like “😂 to …” or “Loved an image”) not counted as messages` : '');
 }
 
 function setContact(key) {
@@ -440,7 +448,7 @@ function refresh({ timeline = true } = {}) {
   if (timeline) renderTimeline(ui, base);
 
   const msgs = inRange(base);
-  const A = aggregateMessages(msgs);
+  const A = aggregateMessages(msgs, S.convoGap);
   renderKpis(A);
   syncRangeUi();
   renderScope(msgs.length);
@@ -517,10 +525,14 @@ function refresh({ timeline = true } = {}) {
   // Replies & sessions
   Charts.set('c-replyhour', anyReply ? replyByHourOption(ui, A) : emptyOption(ui, 'No back-and-forth replies in this selection'));
   put('c-sessions', () => sessionsOption(ui, A));
+  $$('#gapSeg button').forEach((b) => b.classList.toggle('on', +b.dataset.gap === S.convoGap));
+  const gapWords = fmtGapWords(S.convoGap);
   const ls = A.longestSession;
-  $('#sessionNote').textContent = ls
-    ? `Longest: ${fmtNum(ls.n)} messages over ${fmtDuration(ls.end - ls.start)} with ${labelFor(ls.k)} on ${new Date(ls.start).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`
-    : 'A conversation ends after 6 hours of quiet';
+  $('#sessionNote').textContent = `A conversation ends after ${gapWords} of quiet` + (ls
+    ? ` · Longest: ${fmtNum(ls.n)} messages over ${fmtDuration(ls.end - ls.start)} with ${labelFor(ls.k)} on ${new Date(ls.start).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`
+    : '');
+  $('#replyNote').textContent = `How quickly each side answers (within ${gapWords})`;
+  $('#habitsNote').textContent = `Conversation starters (after ${fmtGapShort(S.convoGap)} of quiet), double texts and message traits`;
 
   // Content: the text-heavy pass only runs once the section is on (or near) the screen.
   show('#distinctCard', !all);
@@ -536,7 +548,8 @@ function refresh({ timeline = true } = {}) {
     Charts.set('c-emojitrend', C.emojiTotals.size ? emojiTrendOption(ui, C) : emptyOption(ui, 'No emoji in this selection'));
     const dm = domainsOption(ui, C);
     Charts.set('c-domains', dm.empty ? emptyOption(ui, 'No links in this selection') : dm.opt);
-    put('c-vocab', () => vocabOption(ui, C));
+    S.vocab = C;
+    renderVocab(ui);
     const mt = C.moodTotal;
     const share = (n, d) => (d ? Math.round((n / d) * 100) + '%' : '–');
     $('#moodNote').textContent = mt.n[0] + mt.n[1]
@@ -730,7 +743,7 @@ function wrappedStats(base, year) {
   const from = new Date(year, 0, 1).getTime();
   const to = new Date(year + 1, 0, 1).getTime();
   const msgs = base.filter((m) => m.t >= from && m.t < to);
-  const A = aggregateMessages(msgs);
+  const A = aggregateMessages(msgs, S.convoGap);
   const C = aggregateContent(msgs);
   const single = S.filter.contact !== 'all';
   const people = single
@@ -984,7 +997,7 @@ function renderKpis(A) {
     kpi('Longest streak', A.longestStreak.len ? `${fmtNum(A.longestStreak.len)} days` : '–', A.longestStreak.len ? `${shortDate(A.longestStreak.start)} – ${shortDate(A.longestStreak.end)}` : '', 'Consecutive days with at least one message'),
     kpi('Longest silence', A.longestSilence.len ? `${fmtNum(A.longestSilence.len)} days` : '–', A.longestSilence.len ? `${shortDate(A.longestSilence.start)} – ${shortDate(A.longestSilence.end)}` : '', 'Longest run of days with no messages'),
     kpi('Conversations', fmtNum(convos), `${fmtNum(groups)} group chats`),
-    kpi('Your reply time', fmtDuration(A.replyMedian[1]), `median · theirs ${fmtDuration(A.replyMedian[0])}`, 'Median time to answer, within 24h'),
+    kpi('Your reply time', fmtDuration(A.replyMedian[1]), `median · theirs ${fmtDuration(A.replyMedian[0])}`, `Median time to answer, within ${fmtGapWords(S.convoGap)}`),
     kpi('Avg length', `${avgLen(1)} <small>/ ${avgLen(0)}</small>`, 'characters · sent / received'),
     kpi('Words', fmtNum(A.words[0] + A.words[1]), `${fmtNum(A.words[1])} sent · ${fmtNum(A.words[0])} received`),
     kpi('Emoji', fmtNum(A.emoji[0] + A.emoji[1]), `in ${pct(A.emojiMsgs[0] + A.emojiMsgs[1], total)} of messages`),
@@ -1032,6 +1045,53 @@ function renderCalls(ui) {
 }
 
 // ------------------------------------------------------------------ message browser
+
+// ------------------------------------------------------------------ vocabulary
+
+/** Vocabulary chart plus the new words of the picked month (the latest by default). */
+function renderVocab(ui = S.ui) {
+  const C = S.vocab;
+  const box = $('#vocabWords');
+  const months = [...C.vocab.keys()].sort((a, b) => a - b);
+  if (!months.length) {
+    Charts.set('c-vocab', emptyOption(ui, 'No messages with words in this selection'));
+    box.innerHTML = '';
+    return;
+  }
+  // Default: the latest month that brought any new words.
+  const latest = months.findLast((m) => C.vocabNew.get(m).some((x) => x.top.length)) ?? months[months.length - 1];
+  const mo = months.includes(S.vocabMo) ? S.vocabMo : latest;
+  const chart = Charts.set('c-vocab', vocabOption(ui, C, mo));
+  if (!chart.__wired) {
+    // Click anywhere on the plot: pick the nearest month.
+    chart.__wired = true;
+    chart.getZr().on('click', (e) => {
+      const pt = [e.offsetX, e.offsetY];
+      if (!chart.containPixel('grid', pt)) return;
+      const d = new Date(chart.convertFromPixel({ gridIndex: 0 }, pt)[0] + 15 * 86400000);
+      const keys = [...S.vocab.vocab.keys()];
+      const want = d.getFullYear() * 12 + d.getMonth();
+      S.vocabMo = keys.reduce((best, k) => (Math.abs(k - want) < Math.abs(best - want) ? k : best), keys[0]);
+      renderVocab();
+    });
+  }
+
+  const fresh = C.vocabNew.get(mo);
+  const col = (o, who) => {
+    const { n, top } = fresh[o];
+    const words = top.length
+      ? top.map(([w, uses]) => `<button type="button" class="vocab-chip" data-word="${escapeHtml(w)}" title="Track “${escapeHtml(w)}” in the Word tracker">${escapeHtml(w)}${uses > 1 ? ` <span class="muted">${fmtNum(uses)}</span>` : ''}</button>`).join('')
+      : '<span class="muted">Nothing new</span>';
+    return `<div class="vocab-col ${o ? 'sent' : 'recv'}">
+      <div class="vocab-col-head"><b>${who}</b> · ${fmtNum(n)} new of ${fmtNum(C.vocab.get(mo)[o])} words</div>
+      <div class="vocab-chips">${words}</div>
+    </div>`;
+  };
+  const firstNote = mo === months[0] ? ' (the first month here, so every word counts as new)' : '';
+  box.innerHTML = `<div class="vocab-head"><b>New in ${escapeHtml(new Date(monthToTs(mo)).toLocaleDateString(undefined, { year: 'numeric', month: 'long' }))}</b>
+    <span class="muted">Words each side used for the first time in this selection${firstNote}. Click the chart to pick a month, or a word to track it.</span></div>
+    <div class="vocab-cols">${col(1, 'You')}${col(0, 'Them')}</div>`;
+}
 
 // ------------------------------------------------------------------ word tracker
 
@@ -1243,6 +1303,13 @@ function init() {
     const from = new Date(end.getFullYear(), end.getMonth(), end.getDate() - days + 1).getTime();
     setRange(from, null);
   };
+  $('#gapSeg').innerHTML = CONVO_GAPS.map((g) => `<button data-gap="${g}" title="A conversation ends after ${fmtGapWords(g)} of quiet">${fmtGapShort(g)}</button>`).join('');
+  $('#gapSeg').onclick = (e) => {
+    const g = +e.target.dataset.gap;
+    if (!g) return;
+    S.convoGap = g;
+    refresh({ timeline: false });
+  };
   $('#granSeg').onclick = (e) => {
     const g = e.target.dataset.gran;
     if (!g) return;
@@ -1295,6 +1362,13 @@ function init() {
     if (!b) return;
     $('#phraseInput').value = S.phrase = b.textContent;
     renderPhrase();
+  };
+  $('#vocabWords').onclick = (e) => {
+    const b = e.target.closest('[data-word]');
+    if (!b) return;
+    $('#phraseInput').value = S.phrase = b.dataset.word;
+    renderPhrase();
+    $('#phraseCard').scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
   $('#phraseGranSeg').onclick = (e) => {
     const g = e.target.dataset.gran;

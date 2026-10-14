@@ -583,7 +583,7 @@ function replyOption(ui, A) {
   };
   const counts = [A.reply[1], A.reply[0]];
   const opt = baseOption(ui, { boxZoom: true });
-  opt.xAxis = catAxis(ui, REPLY_BINS.map((b) => b.label));
+  opt.xAxis = catAxis(ui, A.replyBins.map((b) => b.label));
   opt.yAxis = valAxis(ui, { axisLabel: { color: ui.muted, fontSize: 11, formatter: '{value}%' } });
   opt.tooltip.formatter = (ps) => {
     let html = `<div style="font-weight:600;margin-bottom:4px">Replied within ${ps[0].axisValueLabel}</div>`;
@@ -888,7 +888,8 @@ function domainsOption(ui, C, limit = 15) {
   return { opt: sentRecvStack(ui, rows.map((x) => x.d), rows.map((x) => x.s), rows.map((x) => x.r), { horizontal: true }), empty: !rows.length };
 }
 
-function vocabOption(ui, C) {
+/** Different words per month, you vs them; the tooltip and `selMo` marker show new words. */
+function vocabOption(ui, C, selMo) {
   const keys = [...C.vocab.keys()].sort((a, b) => a - b);
   const mk = (o) => keys.map((mo) => [monthToTs(mo), C.vocab.get(mo)[o] || null]);
   const opt = baseOption(ui, { boxZoom: true });
@@ -896,11 +897,28 @@ function vocabOption(ui, C) {
   opt.yAxis = valAxis(ui);
   opt.tooltip = tooltipBase(ui, 'axis', 'line');
   opt.tooltip.formatter = (ps) => {
+    const d = new Date(ps[0].value[0]);
+    const fresh = C.vocabNew.get(d.getFullYear() * 12 + d.getMonth());
     let html = `<div style="font-weight:600;margin-bottom:4px">${monthName(ps[0].value[0])}</div>`;
-    for (const p of ps) html += `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(p.color)}${p.seriesName}</span><b>${p.value[1] == null ? '–' : fmtNum(p.value[1])} words</b></div>`;
-    return html;
+    for (const p of ps) {
+      const nw = fresh && fresh[p.seriesIndex === 0 ? 1 : 0];
+      html += `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(p.color)}${p.seriesName}</span><b>${p.value[1] == null ? '–' : fmtNum(p.value[1])} words</b></div>`;
+      if (nw && nw.top.length) {
+        html += `<div style="margin:0 0 4px 14px;color:#888;max-width:260px;white-space:normal">new: ${nw.top.slice(0, 6).map(([w]) => escapeHtml(w)).join(', ')}${nw.n > 6 ? '…' : ''}</div>`;
+      }
+    }
+    return html + '<div style="margin-top:4px;color:#888">Click to list the new words</div>';
   };
   opt.series = [line('You', mk(1), ui.sent, { connectNulls: true }), line('Them', mk(0), ui.recv, { connectNulls: true })];
+  if (selMo != null) {
+    opt.series[0].markLine = {
+      silent: true,
+      symbol: 'none',
+      label: { show: false },
+      lineStyle: { color: ui.muted, type: 'dashed', width: 1 },
+      data: [{ xAxis: monthToTs(selMo) }],
+    };
+  }
   opt.dataZoom = [insideZoom({ xAxisIndex: 0 })];
   return opt;
 }

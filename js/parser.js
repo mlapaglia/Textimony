@@ -60,7 +60,13 @@ function messageLib(vader) {
   const LINK_RE = /https?:\/\/|www\.[a-z0-9-]+\./i;
   const LAUGH_RE = /\b(?:lol+|lmf?ao+|rofl|(?:ha){2,}h?|(?:he){2,}|(?:ja){2,})\b|😂|🤣|😆|💀/iu;
   const LOVE_RE = /\b(?:love (?:you|u|ya)|luv (?:you|u)|ily|xoxo)\b|❤|😍|🥰|😘|💕|💗|💖/iu;
-  const REACTION_RE = /^(?:(?:Liked|Loved|Disliked|Laughed at|Emphasized|Questioned|Reacted .{1,12} to|Removed .{1,40} from) [“"]|[^\p{L}\p{N}\s]{1,8} to [“"].*[”"]$)/u;
+  // Reactions that arrive as a text: iPhone tapbacks (Loved “…”, Laughed at an image,
+  // Reacted 😂 to “…”, Removed a heart from “…”) and Google Messages ones (😂 to “…,
+  // often cut short with no closing quote). Reactions to media name only the kind of
+  // file, so those must be the whole message.
+  const REACT_VERB = String.raw`(?:Liked|Loved|Disliked|Laughed at|Emphasi[sz]ed|Questioned|Reacted .{1,16}? to|Removed .{1,40}? from|[^\p{L}\p{N}\s]{1,12} to)`;
+  const REACT_MEDIA = String.raw`an? (?:image|photo|picture|movie|video|GIF|gif|sticker|attachment|audio message|voice message|file|location|contact|link)[.!]?$`;
+  const REACTION_RE = new RegExp(String.raw`^${REACT_VERB} (?:[“"‘']|${REACT_MEDIA})`, 'u');
   const UPPER_RE = /\p{Lu}/u;
   const LOWER_RE = /\p{Ll}/u;
 

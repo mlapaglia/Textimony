@@ -186,7 +186,7 @@
         <div class="chart" id="c-share"></div>
       </article>
       <article class="card">
-        <header><div><h2>Reply speed</h2><p class="sub">How quickly each side answers (within 24h)</p></div></header>
+        <header><div><h2>Reply speed</h2><p class="sub" id="replyNote"></p></div></header>
         <div class="chart" id="c-reply"></div>
       </article>
       <article class="card">
@@ -194,11 +194,14 @@
         <div class="chart" id="c-replyhour"></div>
       </article>
       <article class="card">
-        <header><div><h2>Conversation length</h2><p class="sub" id="sessionNote">A conversation ends after 6 hours of quiet</p></div></header>
+        <header>
+          <div><h2>Conversation length</h2><p class="sub" id="sessionNote"></p></div>
+          <div class="seg" id="gapSeg" role="group" aria-label="A conversation ends after this much quiet"></div>
+        </header>
         <div class="chart" id="c-sessions"></div>
       </article>
       <article class="card">
-        <header><div><h2>Texting habits</h2><p class="sub">Conversation starters (after 6h of quiet), double texts and message traits</p></div></header>
+        <header><div><h2>Texting habits</h2><p class="sub" id="habitsNote"></p></div></header>
         <div class="chart" id="c-behavior"></div>
       </article>
       </div>
@@ -253,8 +256,9 @@
         <div class="chart tall" id="c-domains"></div>
       </article>
       <article class="card">
-        <header><div><h2>Vocabulary</h2><p class="sub">Different words used per month</p></div></header>
+        <header><div><h2>Vocabulary</h2><p class="sub">Different words used per month, and the new ones each side picked up</p></div></header>
         <div class="chart" id="c-vocab"></div>
+        <div class="vocab-words" id="vocabWords" aria-live="polite"></div>
       </article>
       <article class="card wide">
         <header><div><h2>Mood over time</h2><p class="sub" id="moodNote">Share of messages that read positive (up) or negative (down) each month</p></div></header>

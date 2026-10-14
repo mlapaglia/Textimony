@@ -49,6 +49,7 @@ function buildDemoFiles() {
     'I just finished that show, the ending was wild', 'can we push to 8?', 'hahaha', 'omg 😱',
     'did you feed the dog?', 'the weather is perfect today 🌞', 'pizza tonight? 🍕', 'WHAT', 'heading out',
     'Liked “dinner at 7?”', 'Loved “see you soon 😊”', 'Laughed at “that was hilarious 🤣🤣”',
+    '😂 to “ that was hilarious 🤣🤣', '❤️ to “see you soon 😊”', 'Loved an image',
     'That reminds me, we still need to plan the camping trip for next month. Are you still in?',
     'Okay so long story short the car is fine but I need a ride to pick it up on Thursday after work if that is ok',
     'ugh this traffic is the worst', 'damn I forgot my keys again', 'that meeting was so bad', 'wtf is going on with the wifi',
@@ -342,7 +343,7 @@ function buildDemoChatZips(rand, pick, lines, startT, endT, stamp) {
     { dir: 'DM 7rWvcbAAAAE', members: [me, people.priya, people.lena], perDay: 0.15 },
     { dir: 'Space AAAA1SQJ1zo', name: 'Weekend Hikers', members: [me, people.priya, people.ben, people.lena], perDay: 0.45 },
   ];
-  const chatLines = [...lines.filter((l) => !/^(Liked|Loved|Laughed)/.test(l)), 'pushed the fix, can you take a look?', 'trail map attached', 'who is driving saturday?', 'in a meeting, will reply after'];
+  const chatLines = [...lines.filter((l) => !/^(?:Liked|Loved|Laughed|\S+ to “)/.test(l)), 'pushed the fix, can you take a look?', 'trail map attached', 'who is driving saturday?', 'in a meeting, will reply after'];
 
   const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];

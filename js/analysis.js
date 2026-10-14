@@ -22,7 +22,6 @@ const TRAITS = [
   { bit: 4, label: 'Laughs' },
   { bit: 32, label: 'Love' },
   { bit: 8, label: 'ALL CAPS' },
-  { bit: 16, label: 'Reactions' },
 ];
 const T_REACTION = 16;
 const T_LINK = 2;
@@ -32,18 +31,42 @@ const LEN_BINS = [
   [100, 159], [160, 249], [250, 499], [500, Infinity],
 ];
 
-const REPLY_BINS = [
-  { max: 60e3, label: '< 1 min' },
-  { max: 5 * 60e3, label: '1–5 min' },
-  { max: 15 * 60e3, label: '5–15 min' },
-  { max: 60 * 60e3, label: '15–60 min' },
-  { max: 3 * 3600e3, label: '1–3 h' },
-  { max: 8 * 3600e3, label: '3–8 h' },
-  { max: 24 * 3600e3, label: '8–24 h' },
-];
-const CONVO_GAP = 6 * 3600e3; // silence that starts a new conversation
+const CONVO_GAP = 6 * 3600e3; // default silence that starts a new conversation
+const CONVO_GAPS = [30 * 60e3, 3600e3, 3 * 3600e3, 6 * 3600e3, 12 * 3600e3, 24 * 3600e3]; // the choices offered
 
-// A "session" is a run of messages in one thread with no CONVO_GAP of silence.
+// Reply-time bin edges. Replies only count within the conversation gap, so the bins
+// stop there (the last one cut short at the gap: "3–6 h" for 6 hours).
+const REPLY_EDGES = [60e3, 5 * 60e3, 15 * 60e3, 60 * 60e3, 3 * 3600e3, 8 * 3600e3, 24 * 3600e3];
+
+/** Reply-time bins up to `gap`: [{ max, label }], the last one open-ended. */
+function replyBins(gap) {
+  const bins = [];
+  let lo = 0;
+  for (const edge of REPLY_EDGES) {
+    if (lo >= gap) break;
+    const hi = Math.min(edge, gap);
+    const inMin = hi <= 3600e3;
+    const unit = inMin ? 60e3 : 3600e3;
+    const label = lo ? `${lo / unit}–${hi / unit} ${inMin ? 'min' : 'h'}` : `< ${hi / unit} ${inMin ? 'min' : 'h'}`;
+    bins.push({ max: hi, label });
+    lo = hi;
+  }
+  bins[bins.length - 1].max = Infinity; // replies right at the gap still land in a bin
+  return bins;
+}
+
+/** "30 minutes", "1 hour", "6 hours": a conversation gap in words. */
+function fmtGapWords(ms) {
+  const [n, unit] = ms < 3600e3 ? [ms / 60e3, 'minute'] : [ms / 3600e3, 'hour'];
+  return `${n} ${unit}${n === 1 ? '' : 's'}`;
+}
+
+/** "30m", "1h", "24h": a conversation gap, short. */
+function fmtGapShort(ms) {
+  return ms < 3600e3 ? `${ms / 60e3}m` : `${ms / 3600e3}h`;
+}
+
+// A "session" is a run of messages in one thread with no conversation gap of silence.
 const SESSION_BINS = [
   { max: 1, label: '1' },
   { max: 5, label: '2–5' },
@@ -141,10 +164,16 @@ function median(arr) {
 const zeros = (n) => new Array(n).fill(0);
 const pair = (n) => [zeros(n), zeros(n)];
 
-/** One pass over the (already filtered, time-sorted) messages. */
-function aggregateMessages(msgs) {
+/**
+ * One pass over the (already filtered, time-sorted) messages. `gap` is the silence
+ * that ends a conversation (sessions, starters, double texts, which messages are replies).
+ */
+function aggregateMessages(msgs, gap = CONVO_GAP) {
+  const replyBinsA = replyBins(gap);
   const A = {
     n: msgs.length,
+    gap,
+    replyBins: replyBinsA,
     dir: [0, 0],
     sms: 0,
     mms: 0,
@@ -166,7 +195,7 @@ function aggregateMessages(msgs) {
     mediaMonths: new Map(), // mo -> { ph, vd, gf, au, ot }
     traits: pair(TRAITS.length),
     contacts: new Map(), // key -> [r, s]
-    reply: pair(REPLY_BINS.length),
+    reply: pair(replyBinsA.length),
     replyTimes: [[], []],
     starters: [0, 0],
     doubleTexts: [0, 0],
@@ -311,7 +340,7 @@ function aggregateMessages(msgs) {
 
     // Reply times / conversation starters / sessions, per thread
     const prev = lastByThread.get(r.k);
-    if (!prev || r.t - prev.t > CONVO_GAP) {
+    if (!prev || r.t - prev.t > gap) {
       A.starters[o]++;
       bc.starters[o]++;
       if (prev) closeSession(prev);
@@ -319,13 +348,13 @@ function aggregateMessages(msgs) {
       continue;
     }
     if (prev.o !== o) {
-      const gap = r.t - prev.t;
-      for (let i = 0; i < REPLY_BINS.length; i++) {
-        if (gap < REPLY_BINS[i].max) { A.reply[o][i]++; break; }
+      const wait = r.t - prev.t;
+      for (let i = 0; i < replyBinsA.length; i++) {
+        if (wait < replyBinsA[i].max) { A.reply[o][i]++; break; }
       }
-      A.replyTimes[o].push(gap);
-      bc.replies[o].push(gap);
-      A.replyByHour[o][r.h].push(gap);
+      A.replyTimes[o].push(wait);
+      bc.replies[o].push(wait);
+      A.replyByHour[o][r.h].push(wait);
     } else {
       A.doubleTexts[o]++;
     }
@@ -378,6 +407,8 @@ function aggregateMessages(msgs) {
 
 const TOKEN_RE = /[\p{L}\p{N}']+/gu;
 const MOOD_THRESHOLD = 0.05; // VADER's standard cut-off for positive / negative
+const URL_RE = /(?:https?:\/\/|\bwww\.)\S+/gi;
+const VOCAB_NEW_TOP = 30; // new words kept per side per month
 const URL_HOST_RE = /(?:https?:\/\/|\bwww\.)([^\s/?#:<>"')\]]+)/gi;
 const DOMAIN_ALIASES = { 'youtu.be': 'youtube.com', 'x.com': 'twitter.com', 'vm.tiktok.com': 'tiktok.com', 'instagr.am': 'instagram.com', 'amzn.to': 'amazon.com', 'a.co': 'amazon.com', 'goo.gl': 'google.com', 'maps.app.goo.gl': 'google.com' };
 
@@ -416,6 +447,9 @@ function aggregateContent(msgs) {
     emojiTotals: new Map(), // emoji -> n
     domains: new Map(), // domain -> [r, s]
     vocab: new Map(), // mo -> [unique words received, unique words sent]
+    // mo -> [received, sent] { n: words used for the first time in this selection (filler
+    //   words left out), top: [[word, uses that month]] of those, most used first }
+    vocabNew: new Map(),
     mood: new Map(), // mo -> { pos: [r, s], neg: [r, s], n: [r, s] } (messages with a mood score)
     moodTotal: { pos: [0, 0], neg: [0, 0], n: [0, 0] },
     swear: new Map(), // mo -> { w: [r, s] swear words, n: [r, s] messages }
@@ -423,7 +457,7 @@ function aggregateContent(msgs) {
     swearWords: new Map(), // family -> [r, s]
   };
   swearFamilyOf = swearFamilyOf || messageLib().swearFamily;
-  const vocabSets = new Map();
+  const vocabCounts = new Map(); // mo -> [Map(word -> uses) received, sent]
   for (const r of msgs) {
     const o = r.o;
     if (r.e) {
@@ -445,9 +479,10 @@ function aggregateContent(msgs) {
       }
     }
     const tokens = tokensOf(r.b);
-    let vs = vocabSets.get(r.mo);
-    if (!vs) vocabSets.set(r.mo, (vs = [new Set(), new Set()]));
-    for (const tk of tokens) vs[o].add(tk);
+    let vc = vocabCounts.get(r.mo);
+    if (!vc) vocabCounts.set(r.mo, (vc = [new Map(), new Map()]));
+    // Words only: leave out the pieces of links.
+    for (const tk of r.f & T_LINK ? tokensOf(r.b.replace(URL_RE, ' ')) : tokens) vc[o].set(tk, (vc[o].get(tk) || 0) + 1);
     if (r.v != null) {
       let md = C.mood.get(r.mo);
       if (!md) C.mood.set(r.mo, (md = { pos: [0, 0], neg: [0, 0], n: [0, 0] }));
@@ -472,7 +507,25 @@ function aggregateContent(msgs) {
       }
     }
   }
-  for (const [mo, [rs, ss]] of vocabSets) C.vocab.set(mo, [rs.size, ss.size]);
+  // Month by month, each side's words that it hadn't used earlier in the selection.
+  const seen = [new Set(), new Set()];
+  for (const mo of [...vocabCounts.keys()].sort((a, b) => a - b)) {
+    const counts = vocabCounts.get(mo);
+    C.vocab.set(mo, [counts[0].size, counts[1].size]);
+    C.vocabNew.set(mo, counts.map((words, o) => {
+      let n = 0;
+      const top = [];
+      for (const [w, uses] of words) {
+        if (seen[o].has(w)) continue;
+        seen[o].add(w);
+        if (w.length < 3 || STOPWORDS.has(w) || /\d/.test(w)) continue;
+        n++;
+        top.push([w, uses]);
+      }
+      top.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+      return { n, top: top.slice(0, VOCAB_NEW_TOP) };
+    }));
+  }
   return C;
 }
 
