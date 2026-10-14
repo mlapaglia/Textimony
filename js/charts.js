@@ -209,6 +209,19 @@ function stackTooltip(params) {
 
 const GRAN_MS = { day: 86400000, week: 7 * 86400000, month: 31 * 86400000 };
 
+/** The granularity "Auto" picks for a span of days. */
+function autoGran(spanDays) {
+  return spanDays > 3 * 365 ? 'month' : spanDays > 180 ? 'week' : 'day';
+}
+
+/** Tooltip title for a day / week / month bucket. */
+function fmtBucket(ts, gran) {
+  const d = new Date(ts);
+  if (gran === 'month') return d.toLocaleDateString(undefined, { year: 'numeric', month: 'long' });
+  if (gran === 'week') return 'Week of ' + d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  return d.toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+}
+
 /** Bucket the start of a day number into day / week (Sunday) / month timestamps. */
 function bucketOfDay(d, gran) {
   if (gran === 'day') return dayToTs(d);
@@ -263,15 +276,9 @@ function timelineOption(ui, tl, gran, zoom) {
     splitLine: { show: false },
   };
   opt.yAxis = valAxis(ui);
-  const fmtBucket = (ts) => {
-    const d = new Date(ts);
-    if (gran === 'month') return d.toLocaleDateString(undefined, { year: 'numeric', month: 'long' });
-    if (gran === 'week') return 'Week of ' + d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-    return d.toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
-  };
   opt.tooltip = tooltipBase(ui, 'axis', 'line');
   opt.tooltip.formatter = (params) => {
-    params.forEach((p) => (p.axisValueLabel = fmtBucket(p.value[0])));
+    params.forEach((p) => (p.axisValueLabel = fmtBucket(p.value[0], gran)));
     return stackTooltip(params);
   };
   const s = tl.x.map((x, i) => [x, tl.s[i]]);
@@ -840,6 +847,36 @@ function emojiTrendOption(ui, C, top = 8) {
   const months = [...C.emojiMonths.keys()].sort((a, b) => a - b);
   const opt = monthlyStackOption(ui, months, emojis.map((e, i) => ({ name: e, color: ui.series[i % ui.series.length], get: (mo) => C.emojiMonths.get(mo).get(e) || 0 })));
   opt.legend.textStyle = { ...opt.legend.textStyle, fontSize: 15, fontFamily: EMOJI_FONT };
+  return opt;
+}
+
+/** Uses of the tracked phrase per day / week / month, you vs them, over the whole selection. */
+function phraseOption(ui, P, firstDay, lastDay, gran) {
+  // Empty ends so the axis spans the selection, not just the days it was used.
+  const days = new Map(P.days);
+  if (!days.has(firstDay)) days.set(firstDay, [0, 0]);
+  if (!days.has(lastDay)) days.set(lastDay, [0, 0]);
+  const tl = buildTimeline(days, gran);
+  const opt = baseOption(ui, { boxZoom: true });
+  opt.xAxis = timeAxis(ui);
+  opt.yAxis = valAxis(ui, { minInterval: 1 });
+  opt.tooltip = tooltipBase(ui, 'axis', 'shadow');
+  opt.tooltip.formatter = (ps) => {
+    ps.forEach((p) => (p.axisValueLabel = fmtBucket(p.value[0], gran)));
+    return stackTooltip(ps);
+  };
+  opt.series = [
+    { ...bar('You', tl.x.map((x, i) => [x, tl.s[i]]), ui.sent, ui, { stack: 'p', rounded: false }), barMaxWidth: 18 },
+    { ...bar('Them', tl.x.map((x, i) => [x, tl.r[i]]), ui.recv, ui, { stack: 'p' }), barMaxWidth: 18 },
+  ];
+  // Too many bars to see at once (days over years): open on the latest 90 with a slider to pan.
+  if (tl.x.length > 150) {
+    const win = { xAxisIndex: 0, startValue: tl.x[tl.x.length - 90], endValue: tl.x[tl.x.length - 1] };
+    opt.grid = { ...opt.grid, bottom: 44 };
+    opt.dataZoom = [sliderZoom(ui, win), insideZoom(win)];
+  } else {
+    opt.dataZoom = [insideZoom({ xAxisIndex: 0 })];
+  }
   return opt;
 }
 

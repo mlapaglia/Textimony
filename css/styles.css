@@ -314,6 +314,19 @@ table.leader .muted { color: var(--muted); }
 /* ------------------------------------------------------------------ message browser */
 .browser { margin-top: 16px; }
 .browser input[type="search"] { width: min(320px, 100%); }
+
+/* Word tracker */
+#phraseInput { width: min(320px, 100%); }
+.phrase-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.phrase-ideas { display: flex; flex-wrap: wrap; gap: 6px; }
+.phrase-ideas .btn.on { border-color: var(--accent); color: var(--accent); }
+.phrase-headline { margin: 8px 0 10px; font-size: 14px; }
+.phrase-first-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.phrase-first { padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border-left: 3px solid var(--series-2); min-width: 0; }
+.phrase-first.sent { border-left-color: var(--series-1); }
+.phrase-first-head { margin-bottom: 4px; font-size: 12px; color: var(--text-2); }
+.phrase-quote { font-size: 14px; overflow-wrap: anywhere; }
+.phrase-quote mark { padding: 0 1px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 25%, transparent); color: inherit; }
 .messages {
   height: 520px;
   overflow-y: auto;

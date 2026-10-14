@@ -215,6 +215,23 @@
         <header><div><h2>Most-used words</h2><p class="sub">Common filler words are left out</p></div></header>
         <div class="chart tall" id="c-words"></div>
       </article>
+      <article class="card wide" id="phraseCard">
+        <header>
+          <div><h2>Word tracker</h2><p class="sub" id="phraseNote">How often a word or phrase comes up over time, and who said it first</p></div>
+          <input type="search" id="phraseInput" placeholder="Try “lol” or “love you”" aria-label="Word or phrase to track" autocomplete="off">
+        </header>
+        <div class="phrase-bar">
+          <div class="phrase-ideas" id="phraseIdeas" role="group" aria-label="Suggestions"></div>
+          <div class="seg" id="phraseGranSeg" role="group" aria-label="Granularity">
+            <button data-gran="auto">Auto</button>
+            <button data-gran="day">Day</button>
+            <button data-gran="week">Week</button>
+            <button data-gran="month">Month</button>
+          </div>
+        </div>
+        <div class="chart" id="c-phrase"></div>
+        <div id="phraseFirsts" aria-live="polite"></div>
+      </article>
       <article class="card">
         <header><div><h2>Message length</h2><p class="sub">Share of messages by length (reactions excluded)</p></div></header>
         <div class="chart" id="c-length"></div>

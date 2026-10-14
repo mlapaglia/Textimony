@@ -24,6 +24,9 @@ const S = {
   callRows: [],
   browserLimit: 200,
   browserQuery: '',
+  phrase: '', // word tracker query
+  phraseGran: 'auto', // word tracker bars: auto / day / week / month
+  phraseMsgs: [], // the selection the word tracker searches
   ui: null,
 };
 
@@ -521,7 +524,9 @@ function refresh({ timeline = true } = {}) {
 
   // Content: the text-heavy pass only runs once the section is on (or near) the screen.
   show('#distinctCard', !all);
+  S.phraseMsgs = msgs;
   lazyRender('#sec-content', () => {
+    renderPhrase(ui);
     if (!all) {
       const rows = none ? [] : distinctiveWords(msgs, docFreqFor());
       $('#distinctNote').textContent = `Words that set ${labelFor(S.filter.contact)} apart from your other conversations`;
@@ -900,8 +905,7 @@ function renderTimeline(ui, base) {
   let gran = S.gran;
   if (gran === 'auto') {
     const keys = [...days.keys()];
-    const span = keys.length ? Math.max(...keys) - Math.min(...keys) : 0;
-    gran = span > 3 * 365 ? 'month' : span > 180 ? 'week' : 'day';
+    gran = autoGran(keys.length ? Math.max(...keys) - Math.min(...keys) : 0);
   }
   S.activeGran = gran;
   $$('#granSeg button').forEach((b) => b.classList.toggle('on', b.dataset.gran === S.gran));
@@ -1028,6 +1032,85 @@ function renderCalls(ui) {
 }
 
 // ------------------------------------------------------------------ message browser
+
+// ------------------------------------------------------------------ word tracker
+
+const PHRASE_IDEAS = ['lol', 'haha', 'love you', 'miss you', 'sorry', 'good morning', 'omw', '😂'];
+
+/** "4h 10m", "3 days", "5 months", "2.5 years": how far apart two moments are. */
+function fmtGap(ms) {
+  const days = ms / 86400000;
+  if (days < 1) return fmtDuration(ms);
+  const plural = (n, unit) => `${n} ${unit}${n === 1 ? '' : 's'}`;
+  if (days < 60) return plural(Math.round(days), 'day');
+  if (days < 730) return plural(Math.round(days / 30.44), 'month');
+  return `${(days / 365.25).toFixed(1).replace(/\.0$/, '')} years`;
+}
+
+/** The message around the phrase's first match, escaped, with the match highlighted. */
+function phraseSnippet(body, re) {
+  re.lastIndex = 0;
+  const m = re.exec(body);
+  if (!m) return escapeHtml(body);
+  const at = m.index;
+  const after = at + m[0].length;
+  let start = Math.max(0, at - 60);
+  let end = Math.min(body.length, after + 80);
+  // Don't cut an emoji (a surrogate pair) in half.
+  if (start > 0 && /[\uDC00-\uDFFF]/.test(body[start])) start--;
+  if (end < body.length && /[\uDC00-\uDFFF]/.test(body[end])) end++;
+  return `${start ? '…' : ''}${escapeHtml(body.slice(start, at))}<mark>${escapeHtml(m[0])}</mark>${escapeHtml(body.slice(after, end))}${end < body.length ? '…' : ''}`;
+}
+
+/** Who said it first, and each side's first use quoted. */
+function phraseFirstsHtml(P, re) {
+  const [them, you] = P.first;
+  const name = (m) => (m.o ? 'You' : messageSender(m));
+  let head;
+  if (you && them) {
+    const [a, b] = you.t <= them.t ? [you, them] : [them, you];
+    head = `<b>${escapeHtml(name(a))}</b> said it first, ${fmtGap(b.t - a.t)} before ${a.o ? escapeHtml(name(b)) : 'you'}.`;
+  } else {
+    head = you ? 'Only you have said it.' : `You've never said it. <b>${escapeHtml(name(them))}</b> said it first.`;
+  }
+  const card = (m) => {
+    const when = new Date(m.t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    const conv = labelFor(m.k);
+    const where = m.k.startsWith('g:') ? `in ${conv}` : m.o ? `to ${conv}` : '';
+    return `<div class="phrase-first ${m.o ? 'sent' : 'recv'}">
+      <div class="phrase-first-head"><b>${escapeHtml(name(m))}</b> first said it · ${when}${where ? ` · ${escapeHtml(where)}` : ''}</div>
+      <div class="phrase-quote">${phraseSnippet(m.b, re)}</div>
+    </div>`;
+  };
+  return `<p class="phrase-headline">${head}</p><div class="phrase-first-grid">${[you, them].filter(Boolean).map(card).join('')}</div>`;
+}
+
+/** Word tracker: uses of S.phrase per month in the current selection, and who said it first. */
+function renderPhrase(ui = S.ui) {
+  const q = S.phrase.trim();
+  $$('#phraseIdeas button').forEach((b) => b.classList.toggle('on', b.textContent === q));
+  $$('#phraseGranSeg button').forEach((b) => b.classList.toggle('on', b.dataset.gran === S.phraseGran));
+  const msgs = S.phraseMsgs;
+  const re = q && phraseRegex(q);
+  const note = $('#phraseNote');
+  const firsts = $('#phraseFirsts');
+  const P = re && msgs.length ? aggregatePhrase(msgs, re) : null;
+  const total = P ? P.uses[0] + P.uses[1] : 0;
+  if (!total) {
+    note.textContent = 'How often a word or phrase comes up over time, and who said it first';
+    firsts.innerHTML = '';
+    const why = !msgs.length ? 'No messages in this selection' : re ? `Nobody said “${q}” in this selection` : 'Type a word or phrase, or pick one above';
+    Charts.set('c-phrase', emptyOption(ui, why));
+    return;
+  }
+  const times = (n) => `${fmtNum(n)} time${n === 1 ? '' : 's'}`;
+  note.textContent = `“${q}”: you said it ${times(P.uses[1])}, them ${times(P.uses[0])}`;
+  const firstDay = msgs[0].d;
+  const lastDay = msgs[msgs.length - 1].d;
+  const gran = S.phraseGran === 'auto' ? autoGran(lastDay - firstDay) : S.phraseGran;
+  Charts.set('c-phrase', phraseOption(ui, P, firstDay, lastDay, gran));
+  firsts.innerHTML = phraseFirstsHtml(P, re);
+}
 
 function renderBrowser(msgs) {
   const q = S.browserQuery.trim().toLowerCase();
@@ -1205,6 +1288,26 @@ function init() {
       S.browserLimit = 200;
       renderBrowser(inRange(baseMessages()));
     }, 200);
+  };
+  $('#phraseIdeas').innerHTML = PHRASE_IDEAS.map((p) => `<button type="button" class="btn small">${escapeHtml(p)}</button>`).join('');
+  $('#phraseIdeas').onclick = (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    $('#phraseInput').value = S.phrase = b.textContent;
+    renderPhrase();
+  };
+  $('#phraseGranSeg').onclick = (e) => {
+    const g = e.target.dataset.gran;
+    if (!g) return;
+    S.phraseGran = g;
+    renderPhrase();
+  };
+  $('#phraseInput').oninput = (e) => {
+    clearTimeout(S.phraseTimer);
+    S.phraseTimer = setTimeout(() => {
+      S.phrase = e.target.value;
+      renderPhrase();
+    }, 250);
   };
   $('#moreBtn').onclick = () => {
     const box = $('#messages');

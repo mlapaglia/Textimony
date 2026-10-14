@@ -476,6 +476,40 @@ function aggregateContent(msgs) {
   return C;
 }
 
+/**
+ * A matcher for a tracked word or phrase: any case, whole words only (so "lol" skips
+ * "lollipop"), any run of spaces between words, and curly apostrophes match straight ones.
+ */
+function phraseRegex(q) {
+  const words = q.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return null;
+  const esc = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/['‘’ʼ]/g, "['‘’ʼ]");
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${words.map(esc).join('\\s+')}(?![\\p{L}\\p{N}_])`, 'giu');
+}
+
+/** Uses of a phrase (see phraseRegex) per day and per side, and each side's first use. */
+function aggregatePhrase(msgs, re) {
+  const P = {
+    days: new Map(), // day -> [r, s] uses
+    uses: [0, 0],
+    msgs: [0, 0], // messages with at least one use
+    first: [null, null], // earliest message using it, received / sent
+  };
+  for (const r of msgs) {
+    if (!r.b || r.f & T_REACTION) continue;
+    const m = r.b.match(re);
+    if (!m) continue;
+    const o = r.o;
+    let v = P.days.get(r.d);
+    if (!v) P.days.set(r.d, (v = [0, 0]));
+    v[o] += m.length;
+    P.uses[o] += m.length;
+    P.msgs[o]++;
+    if (!P.first[o]) P.first[o] = r; // msgs are time-sorted
+  }
+  return P;
+}
+
 /** Number of conversations each word appears in (document frequency for TF-IDF). */
 function buildDocFreq(msgs) {
   const perThread = new Map();
