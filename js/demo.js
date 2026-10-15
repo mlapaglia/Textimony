@@ -183,7 +183,104 @@ function buildDemoFiles() {
     ...buildDemoChatZips(rand, pick, lines, startT, end.getTime(), stamp),
     ...buildDemoWhatsApp(rand, pick, lines, end.getTime()),
     ...buildDemoIMessage(rand, pick, lines, end.getTime()),
+    buildDemoTelegram(rand, pick, lines, end.getTime()),
   ];
+}
+
+/*
+ * Synthetic Telegram Desktop full export (Machine-readable JSON), zipped the way people
+ * zip the DataExport folder: result.json with personal_information, a 1-on-1 chat, a
+ * supergroup, a channel and Saved Messages (both skipped by the parser), a bot chat and
+ * a group you left. Includes the format's quirks: text as an array of entities, service
+ * messages, reactions as a field, media left out of the export, and real photo files.
+ */
+function buildDemoTelegram(rand, pick, lines, endT) {
+  const DAY = 86400000;
+  const me = { name: 'Jamie Park', id: 'user7700001' };
+  const mila = { name: 'Mila Novak', id: 'user7700002' };
+  const kai = { name: 'Kai Tanaka', id: 'user7700003' };
+  const rosa = { name: 'Rosa Alvarez', id: 'user7700004' };
+  const textLines = lines.filter((l) => !/^(?:Liked|Loved|Laughed|\S+ to “)/.test(l));
+  const files = [];
+  let id = 1;
+  let photoN = 1;
+  const pad = (n) => String(n).padStart(2, '0');
+  const local = (t) => {
+    const d = new Date(t);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  };
+  const base = (t, who) => ({ id: id++, type: 'message', date: local(t), date_unixtime: String(Math.floor(t / 1000)), from: who.name, from_id: who.id });
+
+  /** One message with the format's variety: plain or entity text, photos, stickers, voice, reactions. */
+  const message = (t, who, chatDir) => {
+    const m = base(t, who);
+    const r = rand();
+    if (r < 0.06) {
+      const d = new Date(t);
+      const path = `${chatDir}/photos/photo_${photoN++}@${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}.jpg`;
+      files.push([path, demoPng(rand)]);
+      Object.assign(m, { photo: path, width: 160, height: 120, text: rand() < 0.3 ? pick(textLines) : '' });
+    } else if (r < 0.1) {
+      Object.assign(m, { file: '(File not included. Change data exporting settings to download.)', media_type: 'sticker', sticker_emoji: pick(['😂', '👍', '❤️', '🔥']), width: 512, height: 512, text: '' });
+    } else if (r < 0.13) {
+      Object.assign(m, { file: '(File not included. Change data exporting settings to download.)', media_type: 'voice_message', mime_type: 'audio/ogg', duration_seconds: 2 + Math.floor(rand() * 40), text: '' });
+    } else if (r < 0.18) {
+      Object.assign(m, { text: ['look at this ', { type: 'link', text: 'https://example.com/' + Math.floor(rand() * 1000) }, ' 😂'] });
+    } else {
+      m.text = pick(textLines);
+    }
+    m.text_entities = typeof m.text === 'string' ? (m.text ? [{ type: 'plain', text: m.text }] : []) : m.text;
+    if (rand() < 0.07) m.reactions = [{ type: 'emoji', count: 1, emoji: pick(['👍', '😂', '❤']) }];
+    return m;
+  };
+
+  /** Days of conversation between `people` (the first is the one who usually starts). */
+  const conversation = (people, chatDir, perDay, from) => {
+    const msgs = [];
+    for (let day = from; day < endT; day += DAY) {
+      if (rand() > perDay) continue;
+      let t = day + (9 + Math.floor(rand() * 13)) * 3600e3 + Math.floor(rand() * 3600e3);
+      let who = pick(people);
+      for (let i = 0, n = 1 + Math.floor(rand() * rand() * 12); i < n && t < endT; i++) {
+        msgs.push(message(t, who, chatDir));
+        if (rand() < 0.04) msgs.push(message(t, who, chatDir)); // two in the same second
+        who = rand() < 0.35 ? who : pick(people.filter((p) => p !== who));
+        t += Math.floor((rand() < 0.8 ? rand() * 6 : 6 + rand() * 120) * 60000) + 1000;
+      }
+    }
+    return msgs;
+  };
+
+  const start = endT - 300 * DAY;
+  const milaMsgs = conversation([mila, me], 'chats/chat_01', 0.55, start);
+  milaMsgs.splice(3, 0, { id: id++, type: 'service', date: milaMsgs[2].date, date_unixtime: milaMsgs[2].date_unixtime, actor: mila.name, actor_id: mila.id, action: 'pin_message', message_id: 2, text: '', text_entities: [] });
+  const groupMsgs = conversation([kai, me, mila, rosa], 'chats/chat_02', 0.35, start + 30 * DAY);
+  groupMsgs.unshift({ id: id++, type: 'service', date: local(start + 30 * DAY), date_unixtime: String(Math.floor((start + 30 * DAY) / 1000)), actor: kai.name, actor_id: kai.id, action: 'create_group', title: 'Board Game Night 🎲', members: [kai.name, me.name, mila.name, rosa.name], text: '', text_entities: [] });
+
+  const result = {
+    about: 'Here is the data you requested. Remember: Telegram is ad free, it doesn\'t sell your data, and doesn\'t require any account permissions.',
+    personal_information: { user_id: 7700001, first_name: 'Jamie', last_name: 'Park', phone_number: '+1 555 010 0000', username: '@jamiepark', bio: '' },
+    chats: {
+      about: 'This page lists all chats from this export.',
+      list: [
+        { name: mila.name, type: 'personal_chat', id: 7700002, messages: milaMsgs },
+        { name: 'Board Game Night 🎲', type: 'private_supergroup', id: 1800000001, messages: groupMsgs },
+        { name: 'Daily Digest', type: 'public_channel', id: 1900000001, messages: [{ ...base(endT - 5 * DAY, { name: 'Daily Digest', id: 'channel1900000001' }), text: 'Today in tech…', text_entities: [] }] },
+        { type: 'saved_messages', id: 7700001, messages: [{ ...base(endT - 9 * DAY, me), text: 'wifi password: hunter2', text_entities: [] }] },
+        { name: 'BotFather', type: 'bot_chat', id: 93372553, messages: [{ ...base(endT - 200 * DAY, me), text: '/start', text_entities: [{ type: 'bot_command', text: '/start' }] }, { ...base(endT - 200 * DAY + 1000, { name: 'BotFather', id: 'user93372553' }), text: 'I can help you create and manage Telegram bots.', text_entities: [] }] },
+      ],
+    },
+    left_chats: {
+      about: 'This page lists all supergroups and channels from this export that you have left.',
+      list: [{ name: 'Apartment Hunt', type: 'private_group', id: 1700000001, messages: conversation([rosa, me], 'chats/chat_03', 0.4, start).slice(0, 40) }],
+    },
+  };
+  const dir = 'DataExport_' + local(endT).slice(0, 10) + '/';
+  return new File(
+    [buildStoredZip([[dir + 'result.json', JSON.stringify(result, null, 1)], ...files.map(([p, bytes]) => [dir + p, bytes])])],
+    'Telegram Desktop.zip',
+    { type: 'application/zip' },
+  );
 }
 
 /*
