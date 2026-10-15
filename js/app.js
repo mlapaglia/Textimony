@@ -10,9 +10,9 @@ const S = {
   files: [],
   filter: { contact: 'all', source: 'all', groups: true, people: [], from: null, to: null },
   peopleKeys: null, // Set of thread keys matching filter.people, or null when not filtering
-  // Your sender name per source whose exports don't mark it (WhatsApp, iMessage);
+  // Your sender name per source whose records carry sender names (WhatsApp, iMessage, Telegram);
   // `auto` is false once picked by hand.
-  owners: { 2: { name: '', auto: true }, 3: { name: '', auto: true } },
+  owners: { 2: { name: '', auto: true }, 3: { name: '', auto: true }, 4: { name: '', auto: true } },
   firstSeen: new Map(), // key -> time of the first message ever loaded for that conversation
   archives: [], // loaded export files (zips, SMS XML); message attachments point into these by index (att.z)
   docFreq: null, // { sig, value } cache for "What you talk about"
@@ -39,27 +39,32 @@ const $$ = (sel) => [...document.querySelectorAll(sel)];
 
 // ------------------------------------------------------------------ loading
 
-const SOURCES = { 0: 'SMS', 1: 'Google Chat', 2: 'WhatsApp', 3: 'iMessage' };
-const SOURCE_MARK = { 1: '💬', 2: '🟢', 3: '🔵' };
+const SOURCES = { 0: 'SMS', 1: 'Google Chat', 2: 'WhatsApp', 3: 'iMessage', 4: 'Telegram' };
+const SOURCE_MARK = { 1: '💬', 2: '🟢', 3: '🔵', 4: '✈️' };
 const isZip = (f) => /\.zip$/i.test(f.name) || /zip/.test(f.type);
 /** Records from these sources carry their sender in `sn` and get `o` from S.owners. */
-const hasOwner = (s) => s === 2 || s === 3;
+const hasOwner = (s) => s === 2 || s === 3 || s === 4;
+const TELEGRAM_HTML = "This is Telegram's HTML export, which can't be read. Export again and choose “Machine-readable JSON” as the format.";
 
 /** imessage-exporter txt starts with "May 17, 2022  5:29:42 PM"; WhatsApp with "1/2/24, …". */
 const looksLikeIMessage = (text) =>
   /^\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{2}, \d{4} {1,2}\d{1,2}:\d{2}:\d{2} [AP]M/.test(text.replace(/^\ufeff/, ''));
 
-/** 'sms' | 'gchat' | 'whatsapp' | 'imessage', from the extension and what's inside. */
+/** 'sms' | 'gchat' | 'whatsapp' | 'imessage' | 'telegram', from the extension and what's inside. */
 async function fileKind(f) {
+  if (/\.json$/i.test(f.name)) return 'telegram';
+  if (/\.html?$/i.test(f.name)) throw new Error(/^messages\d*\.html$/i.test(f.name) ? TELEGRAM_HTML : `${f.name} isn't an export this app can read`);
   if (/\.txt$/i.test(f.name)) return looksLikeIMessage(await f.slice(0, 4096).text()) ? 'imessage' : 'whatsapp';
   if (!isZip(f)) return 'sms';
   const { listZip, readEntryText } = zipLib();
   const entries = (await listZip(f)).filter((e) => !e.name.endsWith('/'));
   if (entries.some((e) => /(?:^|\/)Google Chat\//.test(e.name))) return 'gchat';
+  if (entries.some((e) => /(?:^|\/)result\.json$/.test(e.name))) return 'telegram';
+  if (entries.some((e) => /(?:^|\/)messages\d*\.html$/.test(e.name))) throw new Error(TELEGRAM_HTML);
   if (entries.some((e) => /(?:^|\/)(?:_chat|WhatsApp[^/]*)\.txt$/i.test(e.name))) return 'whatsapp';
   const txt = entries.find((e) => /\.txt$/i.test(e.name) && !/(?:^|\/)orphaned\.txt$/i.test(e.name)) || entries.find((e) => /\.txt$/i.test(e.name));
   if (txt) return looksLikeIMessage(await readEntryText(txt)) ? 'imessage' : 'whatsapp';
-  throw new Error(`${f.name} isn't a Google Takeout, WhatsApp or iMessage export`);
+  throw new Error(`${f.name} isn't a Google Takeout, WhatsApp, iMessage or Telegram export`);
 }
 
 async function loadFiles(fileList) {
@@ -95,6 +100,13 @@ async function loadFiles(fileList) {
     if (wa.length) jobs.push({ files: wa, parse: (cb) => parseWhatsAppFiles(wa, cb) });
     const im = of('imessage');
     if (im.length) jobs.push({ files: im, parse: (cb) => parseIMessageFiles(im, cb) });
+    const tg = of('telegram');
+    if (tg.length) {
+      // Attachments in a zipped export point at their file by index into this job's files.
+      const attBase = S.archives.length;
+      S.archives.push(...tg);
+      jobs.push({ files: tg, attBase, parse: (cb) => parseTelegramFiles(tg, cb) });
+    }
 
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i];
@@ -103,7 +115,7 @@ async function loadFiles(fileList) {
       const done = await job.parse({
         onBatch(msgs, calls) {
           for (const m of msgs) {
-            // WhatsApp / iMessage records get `o` later (see applyOwners), so key them by sender.
+            // WhatsApp / iMessage / Telegram records get `o` later (see applyOwners), so key them by sender.
             const key = `${m.t}|${hasOwner(m.s) ? m.sn : m.o}|${m.k}|${m.l}|${m.m}`;
             if (S.seenMsgs.has(key)) continue;
             S.seenMsgs.add(key);
@@ -132,6 +144,7 @@ async function loadFiles(fileList) {
         else {
           if (c.name && c.lastT >= cur.lastT) { cur.name = c.name; cur.lastT = c.lastT; }
           if (!cur.addr) cur.addr = c.addr;
+          if (c.owner && !cur.owner) cur.owner = c.owner;
           if (c.members) {
             const all = new Map(cur.members);
             for (const [n, k] of c.members) all.set(n, Math.max(all.get(n) || 0, k));
@@ -153,7 +166,7 @@ async function loadFiles(fileList) {
   if (!S.msgs.length && !S.calls.length) {
     showLoadError(chatBadDates
       ? 'The Google Chat dates are in a language this app can\'t read yet. Set your Google account language to English, export again, and retry.'
-      : 'No messages or calls were found. Use an XML backup from SMS Backup & Restore (sms-*.xml or calls-*.xml), a Google Takeout zip that includes Google Chat, or a WhatsApp chat export (.txt or .zip).');
+      : 'No messages or calls were found. Use an XML backup from SMS Backup & Restore (sms-*.xml or calls-*.xml), a Google Takeout zip that includes Google Chat, a WhatsApp chat export (.txt or .zip), an iMessage export, or a Telegram export (result.json, or a zip of the export folder).');
     return;
   }
 
@@ -199,7 +212,7 @@ function contactLabel(c) {
   return (chat ? chat + ' ' : '') + (formatAddr(c.name) || formatAddr(c.addr) || c.key);
 }
 
-/** Message source of a thread key: 0 = SMS, 1 = Google Chat, 2 = WhatsApp, 3 = iMessage. */
+/** Message source of a thread key: 0 = SMS, 1 = Google Chat, 2 = WhatsApp, 3 = iMessage, 4 = Telegram. */
 function keySource(key) {
   const c = S.contacts.get(key);
   return (c && c.s) || 0;
@@ -209,7 +222,7 @@ function loadedSources() {
   return new Set([...S.contacts.values()].map((c) => c.s || 0));
 }
 
-// ------------------------------------------------------------------ export owner (WhatsApp, iMessage)
+// ------------------------------------------------------------------ export owner (WhatsApp, iMessage, Telegram)
 
 const sameName = (a, b) => a.replace(/[\s~]/g, '').toLowerCase() === b.replace(/[\s~]/g, '').toLowerCase();
 
@@ -217,8 +230,8 @@ const sameName = (a, b) => a.replace(/[\s~]/g, '').toLowerCase() === b.replace(/
 const isDefaultOwner = (s, name) => s === 3 && name === 'Me';
 
 /**
- * Conversations whose owner has to be worked out: every WhatsApp chat, and the
- * iMessage ones exported with a custom name (no "Me" in them).
+ * Conversations whose owner has to be worked out: every WhatsApp and Telegram chat,
+ * and the iMessage ones exported with a custom name (no "Me" in them).
  */
 function ownerPool(source) {
   return [...S.contacts.values()].filter((c) => c.s === source && !c.members.some(([n]) => isDefaultOwner(source, n)));
@@ -226,14 +239,16 @@ function ownerPool(source) {
 
 /**
  * WhatsApp and (custom-named) iMessage exports don't mark which sender is you. A
- * 1-on-1 chat is named after the other person, so its other sender is you (strong
- * evidence); otherwise you're the sender who shows up in the most chats, then the
- * one with the most messages.
+ * Telegram export often does (`owner` on its contacts: certain). Otherwise a 1-on-1
+ * chat is named after the other person, so its other sender is you (strong evidence);
+ * failing that you're the sender who shows up in the most chats, then the one with the
+ * most messages.
  */
 function guessOwner(source) {
   const score = new Map();
   const add = (name, n) => score.set(name, (score.get(name) || 0) + n);
   for (const c of ownerPool(source)) {
+    if (c.owner) add(c.owner, 1e6);
     for (const [name, count] of c.members) add(name, 1 + count / 1e9);
     if (!c.group && c.members.length === 2 && c.members.some(([n]) => sameName(n, c.title))) {
       add(c.members.find(([n]) => !sameName(n, c.title))[0], 1000);
@@ -242,7 +257,7 @@ function guessOwner(source) {
   return [...score.entries()].sort((a, b) => b[1] - a[1]).map(([n]) => n)[0] || '';
 }
 
-/** Set sent/received on WhatsApp / iMessage records from S.owners, and rebuild the pickers. */
+/** Set sent/received on WhatsApp / iMessage / Telegram records from S.owners, and rebuild the pickers. */
 function applyOwners() {
   for (const m of S.msgs) if (hasOwner(m.s)) m.o = m.sn === S.owners[m.s].name || isDefaultOwner(m.s, m.sn) ? 1 : 0;
   for (const c of S.contacts.values()) c.search = contactSearchText(c);
@@ -1269,6 +1284,7 @@ function init() {
   $('#fileInput').onchange = (e) => loadFiles(e.target.files);
   $('#addInput').onchange = (e) => loadFiles(e.target.files);
   $('#demoBtn').onclick = () => loadFiles(buildDemoFiles());
+  $$('[data-demo]').forEach((b) => { b.onclick = () => loadFiles(buildDemoFiles()); });
 
   // Drag & drop anywhere on the page
   let dragDepth = 0;

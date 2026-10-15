@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Yapalytics</title>
-  <meta name="description" content="Charts and statistics for SMS Backup & Restore XML backups, Google Chat exports from Google Takeout, WhatsApp chat exports and iMessage exports, processed entirely in your browser.">
+  <meta name="description" content="Charts and statistics for SMS Backup & Restore XML backups, Google Chat exports from Google Takeout, WhatsApp chat exports, iMessage exports and Telegram exports, processed entirely in your browser.">
   <link rel="stylesheet" href="css/styles.css">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
 </head>
@@ -14,7 +14,7 @@
       <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm3 9v2h2v-2H7Zm4-4v6h2V9h-2Zm4-2v8h2V7h-2Z"/></svg>
       Yapalytics
     </div>
-    <span class="tagline">for SMS Backup &amp; Restore, Google Chat, WhatsApp and iMessage</span>
+    <span class="tagline">for SMS Backup &amp; Restore, Google Chat, WhatsApp, iMessage and Telegram</span>
     <div class="spacer"></div>
     <button id="themeBtn" class="btn ghost" data-mode="auto" title="Switch color theme">◐ Auto</button>
     <a class="btn ghost icon" href="https://github.com/mlapaglia/Yapalytics" target="_blank" rel="noopener" title="View the source on GitHub" aria-label="View the source on GitHub">
@@ -29,7 +29,7 @@
         <h1>See the patterns in your texts</h1>
         <p class="lede">Who you talk to most, when you text, how fast each of you replies, the words and emoji you lean on, and how all of it changes over the years.</p>
         <div class="actions">
-          <label class="btn primary big">Choose your exports<input type="file" id="fileInput" accept=".xml,text/xml,.zip,application/zip,.txt,text/plain" multiple hidden></label>
+          <label class="btn primary big">Choose your exports<input type="file" id="fileInput" accept=".xml,text/xml,.zip,application/zip,.txt,text/plain,.json,application/json" multiple hidden></label>
           <button class="btn big" id="demoBtn">Try the demo</button>
         </div>
         <p class="hint">or drop the files anywhere on this page. Pick several at once, and mix sources: duplicates are merged.</p>
@@ -108,6 +108,39 @@
             <a class="btn small ghost" href="https://brew.sh/" target="_blank" rel="noopener">Homebrew <span aria-hidden="true">↗</span></a>
           </div>
         </article>
+
+        <article class="source">
+          <header>
+            <span class="source-icon" aria-hidden="true">✈️</span>
+            <div><h3>Telegram</h3><p>Telegram Desktop</p></div>
+          </header>
+          <ol>
+            <li>Install <a href="https://desktop.telegram.org/" target="_blank" rel="noopener">Telegram Desktop</a> on a computer and sign in.</li>
+            <li>Open <b>Settings</b> → <b>Advanced</b> → <b>Export Telegram data</b>. For one chat, use its <b>⋮</b> menu → <b>Export chat history</b>.</li>
+            <li>Set <b>Format</b> to <b>Machine-readable JSON</b> and export.</li>
+          </ol>
+          <p class="pick">Choose <code>result.json</code>, or a <code>.zip</code> of the export folder to see photos</p>
+          <p class="note">The HTML format can't be read. The lighter Telegram for macOS app has no export, so use Telegram Desktop.</p>
+          <div class="links">
+            <a class="btn small" href="https://desktop.telegram.org/" target="_blank" rel="noopener">Telegram Desktop <span aria-hidden="true">↗</span></a>
+            <a class="btn small ghost" href="https://telegram.org/blog/export-and-more" target="_blank" rel="noopener">About exports <span aria-hidden="true">↗</span></a>
+          </div>
+        </article>
+
+        <article class="source tips">
+          <header>
+            <span class="source-icon" aria-hidden="true">🧩</span>
+            <div><h3>Mix and match</h3><p>Tips</p></div>
+          </header>
+          <ul>
+            <li>Choose exports from several apps at once. Each conversation is marked with its app <span class="nowrap">(💬 🟢 🔵 ✈️)</span>, and the source switch compares them.</li>
+            <li>Use <b>+ Add files</b> on the dashboard to bring in more later. Overlapping exports are merged, not counted twice.</li>
+            <li>Not ready to export? The demo shows every chart with made-up conversations.</li>
+          </ul>
+          <div class="links">
+            <button class="btn small" type="button" data-demo>Try the demo</button>
+          </div>
+        </article>
       </div>
     </div>
     <div id="progress" class="progress" hidden>
@@ -133,6 +166,7 @@
         <button data-source="1">Google Chat</button>
         <button data-source="2">WhatsApp</button>
         <button data-source="3">iMessage</button>
+        <button data-source="4">Telegram</button>
       </div>
       <div class="owner-fields" id="ownerFields"></div>
       <label class="check"><input type="checkbox" id="groupsChk" checked> Include group chats</label>
@@ -150,7 +184,7 @@
         <button data-preset="90">90 days</button>
         <button data-preset="30">30 days</button>
       </div>
-      <label class="btn small" title="Add more backup files (duplicates are merged)">+ Add files<input type="file" id="addInput" accept=".xml,text/xml,.zip,application/zip,.txt,text/plain" multiple hidden></label>
+      <label class="btn small" title="Add more backup files (duplicates are merged)">+ Add files<input type="file" id="addInput" accept=".xml,text/xml,.zip,application/zip,.txt,text/plain,.json,application/json" multiple hidden></label>
     </div>
     <p class="scope"><span id="scope"></span> <span class="files" id="fileInfo"></span></p>
 
@@ -435,6 +469,7 @@
   <script src="js/googlechat.js"></script>
   <script src="js/whatsapp.js"></script>
   <script src="js/imessage.js"></script>
+  <script src="js/telegram.js"></script>
   <script src="js/demo.js"></script>
   <script src="js/analysis.js"></script>
   <script src="js/charts.js"></script>
