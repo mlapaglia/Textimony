@@ -30,6 +30,7 @@ const S = {
   phraseGran: 'auto', // word tracker bars: auto / day / week / month
   vocab: null, // aggregateContent result behind the Vocabulary card
   vocabMo: null, // month picked on the Vocabulary chart (null = the latest)
+  otd: null, // { month, day } shown in On this day (null = today)
   phraseMsgs: [], // the selection the word tracker searches
   ui: null,
 };
@@ -465,6 +466,9 @@ function refresh({ timeline = true } = {}) {
   const msgs = inRange(base);
   const A = aggregateMessages(msgs, S.convoGap);
   renderKpis(A);
+  renderHighlights(msgs, A);
+  renderOnThisDay(base);
+  show('#profileBtn', S.filter.contact !== 'all');
   syncRangeUi();
   renderScope(msgs.length);
 
@@ -719,6 +723,201 @@ function renderMilestones(A) {
       return `<li><b>${escapeHtml(title)}</b><span class="meta">${date(m.t)}</span></li>`;
     }).join('')
     : '<li class="empty">No milestones in this selection.</li>';
+}
+
+// ------------------------------------------------------------------ highlights, profiles, on this day
+
+/** A conversation's name without its app mark, for sentences. */
+function plainName(key) {
+  const c = S.contacts.get(key);
+  if (!c) return key;
+  if (c.group) return c.name ? c.name.split(', ').map(formatAddr).join(', ') : c.addr.split('~').map(formatAddr).join(', ') || 'Group chat';
+  return formatAddr(c.name) || formatAddr(c.addr) || key;
+}
+
+const personLink = (k, text = plainName(k)) => `<button type="button" class="person-link" data-profile="${escapeHtml(k)}">${escapeHtml(text)}</button>`;
+const clip = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
+const longDate = (t) => new Date(t).toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+const agoText = (t) => (Date.now() - t < DAY_MS ? 'today' : `${fmtGap(Date.now() - t)} ago`);
+
+/** Highlight parts (strings, { b }, { k, text }) as HTML. */
+function partsHtml(parts) {
+  return parts.map((p) => (typeof p === 'string' ? escapeHtml(p) : p.k != null ? personLink(p.k, p.text) : `<b>${escapeHtml(p.b)}</b>`)).join('');
+}
+
+function renderHighlights(msgs, A) {
+  const items = buildHighlights(msgs, A, { labelFor: plainName, senderLabel, single: S.filter.contact !== 'all' });
+  $('#highlights').innerHTML = items.length
+    ? items.map((h) => `<li><span class="hl-icon" aria-hidden="true">${escapeHtml(h.icon)}</span><span>${partsHtml(h.parts)}</span></li>`).join('')
+    : '<li class="empty">Not enough messages here for highlights yet.</li>';
+}
+
+/** Who sent a message, for On this day: "You → Alex", "Alex", "Sam in Book Club". */
+function momentSender(m) {
+  const all = S.filter.contact === 'all';
+  if (m.o) return all ? `You → ${plainName(m.k)}` : 'You';
+  const group = m.k.startsWith('g:');
+  const who = group && (m.sn || m.sk) ? senderLabel(m.sn || m.sk) : group ? 'Someone' : plainName(m.k);
+  return group && all ? `${who} in ${plainName(m.k)}` : who;
+}
+
+/** On this day: the selected date (today by default) in earlier years, newest first. */
+function renderOnThisDay(base) {
+  const now = new Date();
+  const today = { month: now.getMonth(), day: now.getDate() };
+  const sel = S.otd || today;
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const dayName = (d) => new Date(2000, d.month, d.day).toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
+  $('#otdDate').textContent = dayName(sel);
+  $('#otdToday').hidden = sel.month === today.month && sel.day === today.day;
+  const box = $('#otd');
+  const years = sameDayHistory(base, sel.month, sel.day, todayStart);
+  if (!years.length) {
+    const near = nearestDayWithHistory(daysWithHistory(base, todayStart), sel.month, sel.day);
+    box.innerHTML = '<p class="empty">Nothing on this date in earlier years.</p>' +
+      (near ? `<button class="btn small" type="button" data-otd-goto="${near.month}-${near.day}">Go to ${escapeHtml(dayName(near))}, the nearest day with messages →</button>` : '');
+    return;
+  }
+  const single = S.filter.contact !== 'all';
+  box.innerHTML = years.slice(0, 4).map(({ year, msgs }) => {
+    const back = now.getFullYear() - year;
+    const day = new Date(year, sel.month, sel.day).getTime();
+    const top = single ? null : busiestConversation(msgs);
+    const withWhom = top ? (top.of > 1 ? `, mostly with ${personLink(top.k)}` : ` with ${personLink(top.k)}`) : '';
+    const moments = pickMoments(msgs, 3).map((m) =>
+      `<div class="otd-msg ${m.o ? 'sent' : 'recv'}"><span class="otd-who">${escapeHtml(momentSender(m))}</span>${escapeHtml(clip(m.b, 140))}</div>`).join('');
+    return `<section class="otd-year">
+      <div class="otd-head"><b>${back ? `${back} year${back === 1 ? '' : 's'} ago` : 'Earlier this year'}</b> <span class="muted">${escapeHtml(longDate(day))} · ${fmtNum(msgs.length)} message${msgs.length === 1 ? '' : 's'}</span>${withWhom}</div>
+      ${moments ? `<div class="otd-msgs">${moments}</div>` : ''}
+      <button class="btn small ghost" type="button" data-otd-day="${day}">Read that day →</button>
+    </section>`;
+  }).join('');
+}
+
+/** Show one calendar day in the message list. */
+function readDay(dayStart) {
+  const d = new Date(dayStart);
+  setRange(dayStart, new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime() - 1);
+  $('.browser').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function moveOtd(days) {
+  const now = new Date();
+  const cur = S.otd || { month: now.getMonth(), day: now.getDate() };
+  const d = new Date(2000, cur.month, cur.day + days); // a leap year, so Feb 29 is a stop
+  S.otd = { month: d.getMonth(), day: d.getDate() };
+  renderOnThisDay(baseMessages());
+}
+
+/** A profile of one conversation, over all its messages (filters and dates aside). */
+function openProfile(key) {
+  const msgs = S.msgs.filter((m) => m.k === key);
+  if (!msgs.length) return;
+  const A = aggregateMessages(msgs, S.convoGap);
+  const F = profileFacts(msgs, A);
+  const c = S.contacts.get(key) || {};
+  const group = key.startsWith('g:');
+  const name = plainName(key);
+  const them = group ? 'Everyone else' : name;
+  const pct = (a, b) => (b ? Math.round((a / b) * 100) + '%' : '–');
+  const members = group ? new Set(msgs.filter((m) => !m.o).map((m) => m.sn || m.sk).filter(Boolean)).size + 1 : 0;
+  const initials = group ? '👥' : (name.match(/\p{L}[\p{L}'-]*/gu) || []).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '#';
+  const hue = [...key].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7) % 8;
+
+  const tiles = [
+    kpi('Messages', fmtNum(F.n), `${pct(F.you.messages, F.n)} from you`),
+    kpi('Since', escapeHtml(new Date(F.first.t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })), agoText(F.first.t)),
+    kpi('Last message', escapeHtml(new Date(F.last.t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })), agoText(F.last.t)),
+    kpi('Longest streak', F.longestStreak.len ? `${fmtNum(F.longestStreak.len)} days` : '–', F.longestStreak.len ? `${shortDate(F.longestStreak.start)} – ${shortDate(F.longestStreak.end)}` : '', 'Consecutive days with at least one message'),
+    kpi('Busiest month', F.busiestMonth ? new Date(monthToTs(F.busiestMonth.mo)).toLocaleDateString(undefined, { year: 'numeric', month: 'short' }) : '–', F.busiestMonth ? `${fmtNum(F.busiestMonth.n)} messages` : ''),
+    kpi('Favorite time', hourText(F.peakHour), WEEKDAY_PLURAL[F.peakDow]),
+  ];
+
+  // You vs them: the side that leads on each row is marked.
+  const vsRows = [
+    ['Messages', F.you.messages, F.them.messages, fmtNum, 'high'],
+    ['Starts conversations', F.you.starts, F.them.starts, fmtNum, 'high'],
+    ['Usually replies in', F.you.reply, F.them.reply, fmtDuration, 'low'],
+    ['Average length', F.you.avgLen, F.them.avgLen, (v) => `${fmtNum(v)} chars`, 'high'],
+    ['Double texts', F.you.doubles, F.them.doubles, fmtNum, 'high'],
+    ['Questions asked', F.you.questions, F.them.questions, fmtNum, 'high'],
+    ['Late-night messages', F.you.night, F.them.night, fmtNum, 'high'],
+    ['Favorite emoji', F.you.emoji, F.them.emoji, (v) => (v.length ? v.map(([e]) => e).join(' ') : '–'), null],
+  ];
+  // Only a clear difference counts (5%+, and different once formatted).
+  const lead = (a, b, way, fmt) => {
+    if (!way || a == null || b == null || fmt(a) === fmt(b) || Math.abs(a - b) < 0.05 * Math.max(a, b)) return ['', ''];
+    const aWins = way === 'low' ? a < b : a > b;
+    return aWins ? ['lead', ''] : ['', 'lead'];
+  };
+  const vs = `<table class="vs"><thead><tr><th></th><th>You</th><th>${escapeHtml(them)}</th></tr></thead><tbody>${vsRows.map(([label, a, b, fmt, way]) => {
+    const [la, lb] = lead(a, b, way, fmt);
+    return `<tr><th scope="row">${label}</th><td class="${la}">${escapeHtml(fmt(a))}</td><td class="${lb}">${escapeHtml(fmt(b))}</td></tr>`;
+  }).join('')}</tbody></table>`;
+
+  $('#profileTop').innerHTML = `
+    <header class="profile-head">
+      <div class="avatar" style="background: var(--series-${hue + 1})" aria-hidden="true">${escapeHtml(initials)}</div>
+      <div>
+        <h2 id="profileName">${escapeHtml(name)}</h2>
+        <p class="sub">${group ? `Group chat · ${fmtNum(members)} people` : '1-on-1'} on ${escapeHtml(SOURCES[c.s || 0])} · all time</p>
+      </div>
+    </header>
+    <div class="kpis profile-kpis">${tiles.join('')}</div>
+    <h3 class="profile-h">You and ${escapeHtml(them === 'Everyone else' ? 'everyone else' : them)}</h3>
+    ${vs}`;
+
+  const words = distinctiveWords(msgs, docFreqFor(), 15);
+  const started = F.firstText;
+  const bottom = [];
+  if (group) {
+    const rows = senderBreakdown(msgs, key);
+    bottom.push(`<h3 class="profile-h">Most active</h3><ol class="plain-list member-list">${rows.map((r) =>
+      `<li><span>${escapeHtml(r.label)}</span><span class="meta">${fmtNum(r.n)} · ${pct(r.n, F.n)}</span></li>`).join('')}</ol>`);
+  }
+  if (words.length) {
+    bottom.push(`<h3 class="profile-h">What you talk about</h3><p class="sub profile-sub">Words that set this conversation apart</p><div class="chips">${words.map((w) => `<span class="chip">${escapeHtml(w.w)}</span>`).join('')}</div>`);
+  }
+  if (started) {
+    bottom.push(`<h3 class="profile-h">How it started</h3><blockquote class="first-msg"><p>${escapeHtml(clip(started.b, 280))}</p><footer>${escapeHtml(started.o ? 'You' : momentSender(started))}, ${escapeHtml(longDate(started.t))}</footer></blockquote>`);
+  }
+  bottom.push(`<div class="profile-actions"><button class="btn primary" type="button" data-focus="${escapeHtml(key)}">Focus the dashboard on ${escapeHtml(name)}</button></div>`);
+  $('#profileBottom').innerHTML = bottom.join('');
+
+  const dlg = $('#profile');
+  if (!dlg.open) dlg.showModal();
+  dlg.scrollTop = 0;
+  const months = [];
+  for (let mo = F.first.mo; mo <= F.last.mo; mo++) months.push(mo);
+  const get = (o) => (mo) => (A.months.get(mo) || { c: [0, 0] }).c[o];
+  Charts.set('c-profile', monthlyStackOption(S.ui, months, [
+    { name: 'You', color: S.ui.sent, get: get(1) },
+    { name: them, color: S.ui.recv, get: get(0) },
+  ]));
+}
+
+function initGlance() {
+  $('#otdPrev').onclick = () => moveOtd(-1);
+  $('#otdNext').onclick = () => moveOtd(1);
+  $('#otdToday').onclick = () => { S.otd = null; renderOnThisDay(baseMessages()); };
+  $('#profileBtn').onclick = () => openProfile(S.filter.contact);
+  const dlg = $('#profile');
+  dlg.querySelector('.profile-close').onclick = () => dlg.close();
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); }); // the backdrop
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest('[data-profile], [data-otd-day], [data-otd-goto], [data-focus]');
+    if (!t) return;
+    if (t.dataset.profile) openProfile(t.dataset.profile);
+    else if (t.dataset.otdDay) readDay(+t.dataset.otdDay);
+    else if (t.dataset.otdGoto) {
+      const [month, day] = t.dataset.otdGoto.split('-').map(Number);
+      S.otd = { month, day };
+      renderOnThisDay(baseMessages());
+    } else if (t.dataset.focus) {
+      dlg.close();
+      setContact(t.dataset.focus);
+    }
+  });
 }
 
 // ---- lazy sections: render expensive sections only when they're on (or near) the screen
@@ -1018,7 +1217,7 @@ function renderKpis(A) {
     kpi('Emoji', fmtNum(A.emoji[0] + A.emoji[1]), `in ${pct(A.emojiMsgs[0] + A.emojiMsgs[1], total)} of messages`),
     kpi('Attachments', fmtNum(media(0) + media(1)), `${fmtNum(A.media.ph[0] + A.media.ph[1])} photos · ${fmtNum(A.media.vd[0] + A.media.vd[1])} videos · ${fmtBytes(A.mediaBytes)}`),
     kpi('Night owl', pct(nightCount, total), A.latestNight ? `latest ${new Date(A.latestNight.t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : 'no messages after midnight', 'Messages between midnight and 5am'),
-    kpi('Longest conversation', A.longestSession ? `${fmtNum(A.longestSession.n)} <small>msgs</small>` : '–', A.longestSession ? `${escapeHtml(labelFor(A.longestSession.k))} · ${new Date(A.longestSession.start).toLocaleDateString()}` : '', 'Most messages without a 6-hour break'),
+    kpi('Longest conversation', A.longestSession ? `${fmtNum(A.longestSession.n)} <small>msgs</small>` : '–', A.longestSession ? `${escapeHtml(labelFor(A.longestSession.k))} · ${new Date(A.longestSession.start).toLocaleDateString()}` : '', `Most messages with no ${fmtGapWords(S.convoGap)} of quiet in between`),
   ];
   $('#kpis').innerHTML = tiles.join('');
 }
@@ -1349,7 +1548,7 @@ function init() {
       return;
     }
     const tr = e.target.closest('tbody tr');
-    if (tr) setContact(tr.dataset.key);
+    if (tr) openProfile(tr.dataset.key);
   };
   $('#leaderMore').onclick = () => {
     S.leader.all = !S.leader.all;
@@ -1357,9 +1556,10 @@ function init() {
   };
   $('#driftList').onclick = (e) => {
     const li = e.target.closest('li[data-key]');
-    if (li) setContact(li.dataset.key);
+    if (li) openProfile(li.dataset.key);
   };
   $('#wrapSave').onclick = saveWrapped;
+  initGlance();
   initViewer();
   initGallery();
   observeLazySections();

@@ -186,9 +186,30 @@
       </div>
       <label class="btn small" title="Add more backup files (duplicates are merged)">+ Add files<input type="file" id="addInput" accept=".xml,text/xml,.zip,application/zip,.txt,text/plain,.json,application/json" multiple hidden></label>
     </div>
-    <p class="scope"><span id="scope"></span> <span class="files" id="fileInfo"></span></p>
+    <p class="scope"><span id="scope"></span> <button class="btn small ghost scope-btn" id="profileBtn" type="button" hidden>View profile</button> <span class="files" id="fileInfo"></span></p>
 
     <section class="kpis" id="kpis" aria-label="Summary"></section>
+
+    <section class="dash-section" id="sec-glance">
+      <div class="grid">
+      <article class="card" id="highlightsCard">
+        <header><div><h2>Highlights</h2><p class="sub">What stands out in this selection. Click a name for their profile.</p></div></header>
+        <ul class="highlights" id="highlights"></ul>
+      </article>
+      <article class="card" id="otdCard">
+        <header>
+          <div><h2>On this day</h2><p class="sub">The same date in earlier years</p></div>
+          <div class="otd-nav">
+            <button class="btn small ghost icon" id="otdPrev" type="button" aria-label="Previous day">‹</button>
+            <span id="otdDate" aria-live="polite"></span>
+            <button class="btn small ghost icon" id="otdNext" type="button" aria-label="Next day">›</button>
+            <button class="btn small ghost" id="otdToday" type="button">Today</button>
+          </div>
+        </header>
+        <div id="otd"></div>
+      </article>
+      </div>
+    </section>
 
     <section class="dash-section" id="sec-activity">
       <h2 class="section-title">Activity</h2>
@@ -250,12 +271,12 @@
         <div class="chart" id="c-relationships"></div>
       </article>
       <article class="card wide" id="leaderCard">
-        <header><div><h2>Conversation leaderboard</h2><p class="sub">Click a column to sort, or a row to focus that conversation</p></div></header>
+        <header><div><h2>Conversation leaderboard</h2><p class="sub">Click a column to sort, or a row to see that conversation’s profile</p></div></header>
         <div class="table-wrap"><table class="leader" id="leaderTable"></table></div>
         <button class="btn small more" id="leaderMore" hidden>Show all</button>
       </article>
       <article class="card" id="driftCard">
-        <header><div><h2>Drifted apart</h2><p class="sub">People you used to talk to a lot, quiet for 90+ days</p></div></header>
+        <header><div><h2>Drifted apart</h2><p class="sub">People you used to talk to a lot, quiet for 90+ days. Click one for their profile.</p></div></header>
         <ol class="plain-list" id="driftList"></ol>
       </article>
       <article class="card">
@@ -461,6 +482,14 @@
     <div class="viewer-caption"></div>
   </dialog>
 
+  <dialog id="profile" class="profile" aria-labelledby="profileName">
+    <button class="btn ghost icon profile-close" type="button" aria-label="Close">✕</button>
+    <div id="profileTop"></div>
+    <h3 class="profile-h">Messages by month</h3>
+    <div class="chart profile-chart" id="c-profile"></div>
+    <div id="profileBottom"></div>
+  </dialog>
+
   <div class="drop-overlay" aria-hidden="true"><div>Drop backup files to load them</div></div>
 
   <script src="js/vendor/vader.js"></script>
@@ -472,6 +501,7 @@
   <script src="js/telegram.js"></script>
   <script src="js/demo.js"></script>
   <script src="js/analysis.js"></script>
+  <script src="js/insights.js"></script>
   <script src="js/charts.js"></script>
   <script src="js/media.js"></script>
   <script src="js/app.js"></script>
