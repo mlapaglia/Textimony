@@ -458,8 +458,12 @@
     <section class="card wide browser">
       <header>
         <div><h2>Messages</h2><p class="sub" id="browserCount"></p></div>
-        <input type="search" id="search" placeholder="Search messages…" aria-label="Search messages">
+        <div class="browser-tools">
+          <label class="check" title="Show each message's mood score; click a score to see why"><input type="checkbox" id="moodChk"> Mood scores</label>
+          <input type="search" id="search" placeholder="Search messages…" aria-label="Search messages">
+        </div>
       </header>
+      <div class="browser-filter" id="browserFilter" hidden></div>
       <button class="btn small more" id="moreBtn" hidden>Show earlier messages</button>
       <div class="messages" id="messages"></div>
     </section>

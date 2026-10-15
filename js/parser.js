@@ -113,6 +113,38 @@ function messageLib(vader) {
     }
   }
 
+  /**
+   * Why a message got its mood score: the same text VADER scored for rec.v (emoji
+   * swapped for words), with the words that counted (emoji shown as themselves), each
+   * word's valence after modifiers and its lexicon value, and the ! / ? emphasis.
+   * Null when the message has no score.
+   */
+  function explainMood(body) {
+    if (!vader || !vader.explain || !body) return null;
+    // Build the same text analyzeText scores, noting which word position each emoji
+    // became: VADER splits on whitespace and drops 1-character pieces.
+    const wordCount = (s) => s.split(/\s/).filter((t) => t.length > 1).length;
+    const emojiAt = new Map(); // word index -> emoji
+    let text = '';
+    let last = 0;
+    for (const m of body.matchAll(EMOJI_RE)) {
+      text += body.slice(last, m.index);
+      const word = EMOJI_WORDS[m[0].replace(/\uFE0F/g, '')] || '';
+      if (word) emojiAt.set(wordCount(text), m[0]);
+      text += ` ${word} `;
+      last = m.index + m[0].length;
+    }
+    text += body.slice(last);
+    if (!/[\p{L}]/u.test(text)) return null;
+    const e = vader.explain(text);
+    const round = (x) => Math.round(x * 100) / 100;
+    const words = [];
+    e.words.forEach((w, i) => {
+      if (w.valence) words.push({ word: emojiAt.get(i) || w.word, valence: round(w.valence), lexicon: round(w.lexicon) });
+    });
+    return { score: round(e.compound), words, emphasis: round(e.emphasis) };
+  }
+
   function stampTime(rec) {
     const dt = new Date(rec.t);
     rec.h = dt.getHours();
@@ -121,7 +153,7 @@ function messageLib(vader) {
     rec.mo = dt.getFullYear() * 12 + dt.getMonth();
   }
 
-  return { analyzeText, stampTime, swearFamily, T_REACTION };
+  return { analyzeText, stampTime, swearFamily, explainMood, T_REACTION };
 }
 
 /*

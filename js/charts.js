@@ -946,7 +946,7 @@ function moodOption(ui, C) {
     const row = (label, o, color) => m.n[o]
       ? `<div style="display:flex;justify-content:space-between;gap:16px"><span>${dot(color)}${label}</span><span><b>${pct(m.pos[o], m.n[o])}%</b> positive · <b>${pct(m.neg[o], m.n[o])}%</b> negative <span style="color:#888">of ${fmtNum(m.n[o])}</span></span></div>`
       : '';
-    return `<div style="font-weight:600;margin-bottom:4px">${monthName(monthToTs(mo))}</div>${row('You', 1, ui.sent)}${row('Them', 0, ui.recv)}`;
+    return `<div style="font-weight:600;margin-bottom:4px">${monthName(monthToTs(mo))}</div>${row('You', 1, ui.sent)}${row('Them', 0, ui.recv)}<div style="margin-top:4px;color:#888">Click a bar to read those messages</div>`;
   };
   // Positive and negative bars share a name, so the legend toggles both together.
   opt.legend.data = ['You', 'Them'];
