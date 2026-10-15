@@ -24,16 +24,91 @@
 
   <!-- ============================================================ landing -->
   <section id="landing">
-    <div id="drop" class="dropzone">
-      <h1>See the patterns in your texts</h1>
-      <p>Open the XML backup from <b>SMS Backup &amp; Restore</b> (<code>sms-….xml</code>, and optionally <code>calls-….xml</code>), a <b>Google Takeout</b> export of Google Chat (<code>takeout-….zip</code>; pick every part if it was split), <b>WhatsApp</b> chat exports (<code>WhatsApp Chat with ….txt</code> or <code>.zip</code>), and/or an <b>iMessage</b> export from <a href="https://github.com/ReagentX/imessage-exporter" target="_blank" rel="noopener">imessage-exporter</a> (<code>imessage-exporter -f txt</code>; pick the <code>.txt</code> files or a zip of the folder). You can pick several files; duplicates are merged.</p>
-      <div class="actions">
-        <label class="btn primary">Choose backup files<input type="file" id="fileInput" accept=".xml,text/xml,.zip,application/zip,.txt,text/plain" multiple hidden></label>
-        <button class="btn" id="demoBtn">Try demo data</button>
+    <div id="drop" class="landing">
+      <div class="hero">
+        <h1>See the patterns in your texts</h1>
+        <p class="lede">Who you talk to most, when you text, how fast each of you replies, the words and emoji you lean on, and how all of it changes over the years.</p>
+        <div class="actions">
+          <label class="btn primary big">Choose your exports<input type="file" id="fileInput" accept=".xml,text/xml,.zip,application/zip,.txt,text/plain" multiple hidden></label>
+          <button class="btn big" id="demoBtn">Try the demo</button>
+        </div>
+        <p class="hint">or drop the files anywhere on this page. Pick several at once, and mix sources: duplicates are merged.</p>
+        <p id="loadError" class="error" hidden></p>
+        <p class="privacy"><span aria-hidden="true">🔒</span> Everything runs in this browser tab. Your messages are never uploaded.</p>
       </div>
-      <p class="hint">or drop files anywhere on this page</p>
-      <p class="privacy">🔒 Everything runs in your browser. Your messages are never uploaded anywhere.</p>
-      <p id="loadError" class="error" hidden></p>
+
+      <h2 class="guide-title">Get your messages</h2>
+      <p class="guide-sub">Export from one or more of these, then choose the files above.</p>
+      <div class="sources">
+        <article class="source">
+          <header>
+            <span class="source-icon" aria-hidden="true">📱</span>
+            <div><h3>SMS &amp; MMS</h3><p>Android phones</p></div>
+          </header>
+          <ol>
+            <li>Install <a href="https://play.google.com/store/apps/details?id=com.riteshsahu.SMSBackupRestore" target="_blank" rel="noopener">SMS Backup &amp; Restore</a> on your phone.</li>
+            <li>Back up <b>Messages</b>, and <b>Calls</b> too if you want call stats.</li>
+            <li>Copy the backup files to this computer, or save them to a cloud drive and download them.</li>
+          </ol>
+          <p class="pick">Choose <code>sms-….xml</code> and, optionally, <code>calls-….xml</code></p>
+          <div class="links">
+            <a class="btn small" href="https://play.google.com/store/apps/details?id=com.riteshsahu.SMSBackupRestore" target="_blank" rel="noopener">Google Play <span aria-hidden="true">↗</span></a>
+            <a class="btn small ghost" href="https://www.synctech.com.au/sms-backup-restore/" target="_blank" rel="noopener">Help <span aria-hidden="true">↗</span></a>
+          </div>
+        </article>
+
+        <article class="source">
+          <header>
+            <span class="source-icon" aria-hidden="true">💬</span>
+            <div><h3>Google Chat</h3><p>Google Takeout</p></div>
+          </header>
+          <ol>
+            <li>Open Google Takeout and click <b>Deselect all</b>.</li>
+            <li>Tick <b>Google Chat</b>, then <b>Next step</b> → <b>Export once</b>, <b>.zip</b> → <b>Create export</b>.</li>
+            <li>When Google emails you, download every part of the export.</li>
+          </ol>
+          <p class="pick">Choose <code>takeout-….zip</code>, all parts together if it was split</p>
+          <p class="note">Dates are only understood when your Google account language is English.</p>
+          <div class="links">
+            <a class="btn small" href="https://takeout.google.com/" target="_blank" rel="noopener">Open Google Takeout <span aria-hidden="true">↗</span></a>
+          </div>
+        </article>
+
+        <article class="source">
+          <header>
+            <span class="source-icon" aria-hidden="true">🟢</span>
+            <div><h3>WhatsApp</h3><p>Android or iPhone</p></div>
+          </header>
+          <ol>
+            <li>Open a chat, then <b>⋮</b> (Android) or the contact or group name (iPhone).</li>
+            <li>Tap <b>Export chat</b>, with or without media, and send it to yourself.</li>
+            <li>Repeat for every chat you want to include.</li>
+          </ol>
+          <p class="pick">Choose <code>WhatsApp Chat with ….txt</code> or <code>WhatsApp Chat - ….zip</code></p>
+          <p class="note">Exports don't say which sender is you. Yapalytics guesses, and you can correct it under <b>You on WhatsApp</b>.</p>
+          <div class="links">
+            <a class="btn small" href="https://faq.whatsapp.com/1180414079177245" target="_blank" rel="noopener">How to export a chat <span aria-hidden="true">↗</span></a>
+          </div>
+        </article>
+
+        <article class="source">
+          <header>
+            <span class="source-icon" aria-hidden="true">🔵</span>
+            <div><h3>iMessage</h3><p>On a Mac</p></div>
+          </header>
+          <ol>
+            <li>Install the free <a href="https://github.com/ReagentX/imessage-exporter" target="_blank" rel="noopener">imessage-exporter</a> with Homebrew: <code class="cmd">brew install imessage-exporter</code></li>
+            <li>Run it. Add <code>-c clone</code> to copy attachments too. <code class="cmd">imessage-exporter -f txt</code></li>
+            <li>It writes one <code>.txt</code> per conversation to <code>~/imessage_export</code>.</li>
+          </ol>
+          <p class="pick">Choose the <code>.txt</code> files, or a <code>.zip</code> of the folder</p>
+          <p class="note">Terminal needs <b>Full Disk Access</b> (System Settings → Privacy &amp; Security). To read an iPhone backup instead, add <code>-p</code> and the backup folder.</p>
+          <div class="links">
+            <a class="btn small" href="https://github.com/ReagentX/imessage-exporter" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a>
+            <a class="btn small ghost" href="https://brew.sh/" target="_blank" rel="noopener">Homebrew <span aria-hidden="true">↗</span></a>
+          </div>
+        </article>
+      </div>
     </div>
     <div id="progress" class="progress" hidden>
       <div class="track"><div id="progressBar"></div></div>

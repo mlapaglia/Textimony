@@ -158,21 +158,73 @@ code { font-size: 0.92em; background: var(--surface-2); padding: 1px 5px; border
 .spacer { flex: 1; }
 
 /* ------------------------------------------------------------------ landing */
-#landing { padding: 8vh 16px; display: grid; place-items: center; }
-.dropzone {
-  max-width: 640px;
+#landing { padding: 6vh 24px 64px; display: grid; place-items: center; }
+.landing { width: min(960px, 100%); }
+
+.hero {
+  max-width: 720px;
+  margin: 0 auto;
   text-align: center;
-  padding: 48px 32px;
+  padding: 48px 40px 36px;
   background: var(--surface);
   border: 1.5px dashed var(--border-strong);
   border-radius: 20px;
 }
-.dropzone h1 { margin: 0 0 12px; font-size: 28px; letter-spacing: -0.01em; }
-.dropzone p { color: var(--text-2); margin: 0 0 20px; }
-.dropzone .actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 16px; }
-.dropzone .hint { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
-.dropzone .privacy { color: var(--muted); font-size: 13px; margin: 0; }
-.error { color: var(--error) !important; margin-top: 16px !important; }
+.hero h1 { margin: 0 0 12px; font-size: 34px; line-height: 1.15; letter-spacing: -0.02em; }
+.hero .lede { margin: 0 auto 28px; max-width: 540px; color: var(--text-2); font-size: 16px; line-height: 1.5; }
+.hero .actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 14px; }
+.btn.big { padding: 12px 22px; font-size: 15px; border-radius: 10px; }
+.hero .hint { margin: 0 0 20px; color: var(--muted); font-size: 13px; }
+.hero .privacy {
+  display: inline-flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 13px;
+}
+.error { margin: 0 0 16px; color: var(--error); font-weight: 500; }
+
+.guide-title { margin: 56px 0 4px; text-align: center; font-size: 20px; letter-spacing: -0.01em; }
+.guide-sub { margin: 0 0 20px; text-align: center; color: var(--text-2); }
+.sources { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 720px) { .sources { grid-template-columns: minmax(0, 1fr); } }
+.source {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 18px 18px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+.source header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.source-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  font-size: 20px;
+}
+.source h3 { margin: 0; font-size: 15px; }
+.source header p { margin: 0; color: var(--muted); font-size: 12px; }
+.source ol { margin: 0 0 12px; padding-left: 20px; color: var(--text-2); font-size: 13px; }
+.source li { margin-bottom: 6px; padding-left: 2px; }
+.source li::marker { color: var(--muted); font-weight: 600; }
+.source b { color: var(--text); font-weight: 600; }
+.source a:not(.btn) { color: var(--accent); }
+.source code { overflow-wrap: anywhere; }
+.source code.cmd { display: block; width: fit-content; max-width: 100%; margin: 4px 0 2px; padding: 3px 8px; white-space: nowrap; overflow-x: auto; }
+.source .pick { margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; }
+.source .note { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+.source .links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 8px; }
+.source .links .btn { text-decoration: none; }
 
 .progress { width: min(560px, 100%); text-align: center; }
 .progress .track { height: 8px; background: var(--grid); border-radius: 999px; overflow: hidden; }
@@ -454,6 +506,11 @@ table.leader .muted { color: var(--muted); }
   .field.grow, .field.people { max-width: none; flex-basis: 100%; }
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kpi-value { font-size: 20px; }
-  .dropzone { padding: 32px 18px; }
+  #landing { padding: 24px 16px 48px; }
+  .hero { padding: 32px 18px 24px; }
+  .hero h1 { font-size: 27px; }
+  .hero .lede { font-size: 15px; }
+  .hero .privacy { border-radius: 12px; text-align: left; }
+  .guide-title { margin-top: 40px; }
   .bubble { max-width: 85%; }
 }
