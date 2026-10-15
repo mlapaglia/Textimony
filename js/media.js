@@ -50,8 +50,12 @@ async function attachmentBlob(a, type = attType(a)) {
   const file = S.archives[a.z];
   if (a.b != null) {
     const b64 = (await file.slice(a.b, a.b + a.l).text()).replace(/&#(?:10|13);|\s/g, '');
-    const res = await fetch(`data:${type || 'application/octet-stream'};base64,${b64}`);
-    return res.blob();
+    // atob throws on damaged data, which the callers treat as "can't preview" (a data:
+    // URL fetch would also log a load error to the console).
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type });
   }
   zipReader = zipReader || zipLib();
   return zipReader.readEntryBlob({ file, offset: a.o, csize: a.c, method: a.m, name: a.p }, type);

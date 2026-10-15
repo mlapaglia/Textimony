@@ -604,3 +604,60 @@ table.leader .muted { color: var(--muted); }
   .profile-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .otd-nav #otdDate { min-width: 0; }
 }
+
+/* ------------------------------------------------------------------ mood details */
+.browser-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.browser-tools .check { font-size: 13px; padding-bottom: 0; }
+.browser-tools input[type="search"] { width: 280px; max-width: 100%; }
+.browser-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 10px;
+  padding: 2px 4px 2px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+}
+.browser-filter .btn { padding: 2px 8px; }
+.mood-pill {
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  cursor: pointer;
+  color: #fff;
+}
+.mood-pill.pos { background: #1a9c6c; }
+.mood-pill.neg { background: #d03b3b; }
+.mood-pill.neu { background: rgba(127, 127, 127, 0.55); }
+.mood-pill:hover { filter: brightness(1.1); }
+.mood-why {
+  margin: 6px -4px 2px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: normal;
+}
+.mood-words { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.mw { padding: 1px 8px; border-radius: 999px; background: var(--surface-2); }
+.mw.pos b { color: #1a9c6c; }
+.mw.neg b { color: #d03b3b; }
+.mw .was { color: var(--muted); font-size: 11px; }
+.mood-note { color: var(--muted); font-size: 11.5px; }
+:root[data-theme="dark"] .mw.pos b { color: #3fcf97; }
+:root[data-theme="dark"] .mw.neg b { color: #f07070; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .mw.pos b { color: #3fcf97; }
+  :root:not([data-theme="light"]) .mw.neg b { color: #f07070; }
+}

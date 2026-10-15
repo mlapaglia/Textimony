@@ -26,6 +26,8 @@ const S = {
   callRows: [],
   browserLimit: 200,
   browserQuery: '',
+  browserMood: null, // { mo, o (null = both), kind: 'pos' | 'neg' | 'any' } picked on the mood chart
+  showMood: false, // mood scores on the messages
   phrase: '', // word tracker query
   phraseGran: 'auto', // word tracker bars: auto / day / week / month
   vocab: null, // aggregateContent result behind the Vocabulary card
@@ -574,7 +576,8 @@ function refresh({ timeline = true } = {}) {
     $('#moodNote').textContent = mt.n[0] + mt.n[1]
       ? `Share of messages that read positive (up) or negative (down), scored with VADER. You: ${share(mt.pos[1], mt.n[1])} positive, ${share(mt.neg[1], mt.n[1])} negative · Them: ${share(mt.pos[0], mt.n[0])} positive, ${share(mt.neg[0], mt.n[0])} negative`
       : 'Share of messages that read positive (up) or negative (down) each month';
-    Charts.set('c-mood', mt.n[0] + mt.n[1] ? moodOption(ui, C) : emptyOption(ui, 'No messages with words in this selection'));
+    if (mt.n[0] + mt.n[1]) $('#moodNote').textContent += '. Click a bar to read those messages.';
+    wireMoodChart(Charts.set('c-mood', mt.n[0] + mt.n[1] ? moodOption(ui, C) : emptyOption(ui, 'No messages with words in this selection')));
     const st = C.swearTotal;
     const per1k = (o) => (st.n[o] ? (st.w[o] / st.n[o] * 1000).toFixed(1) : '–');
     const topSwears = [...C.swearWords.entries()].sort((a, b) => (b[1][0] + b[1][1]) - (a[1][0] + a[1][1])).slice(0, 5).map(([w]) => w);
@@ -723,6 +726,99 @@ function renderMilestones(A) {
       return `<li><b>${escapeHtml(title)}</b><span class="meta">${date(m.t)}</span></li>`;
     }).join('')
     : '<li class="empty">No milestones in this selection.</li>';
+}
+
+// ------------------------------------------------------------------ mood details
+
+const moodKind = (v) => (v >= MOOD_THRESHOLD ? 'pos' : v <= -MOOD_THRESHOLD ? 'neg' : 'neu');
+const fmtScore = (v) => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(2);
+/** messageLib with VADER, for explaining scores on the page (built on first use). */
+const moodLib = () => (moodLib.lib = moodLib.lib || messageLib(vaderLib()));
+
+/** Whether a message is one of those picked on the mood chart. */
+function moodMatches(m, f) {
+  if (m.mo !== f.mo || m.v == null || (f.o != null && m.o !== f.o)) return false;
+  const k = moodKind(m.v);
+  return f.kind === 'any' ? k !== 'neu' : k === f.kind;
+}
+
+function moodFilterLabel(f) {
+  const kind = { pos: 'Positive', neg: 'Negative', any: 'Positive and negative' }[f.kind];
+  const who = f.o === 1 ? ' you sent' : f.o === 0 ? ' you received' : '';
+  return `${kind} messages${who} · ${monthName(monthToTs(f.mo))}`;
+}
+
+/** From the mood chart: list that month's positive or negative messages, and go there. */
+function showMoodMessages(mo, o, kind) {
+  S.browserMood = { mo, o, kind };
+  S.browserLimit = 200;
+  S.showMood = true;
+  $('#moodChk').checked = true;
+  renderBrowser(inRange(baseMessages()));
+  $('.browser').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/** Bars open that month's messages of that side and direction; empty space, all of that month's. */
+function wireMoodChart(chart) {
+  if (!chart || chart.__moodWired) return;
+  chart.__moodWired = true;
+  // Bars sit on the 1st of their month: the nearest month to a point in time.
+  const monthAt = (ts) => {
+    const d = new Date(ts + 15 * DAY_MS);
+    return d.getFullYear() * 12 + d.getMonth();
+  };
+  chart.on('click', (p) => {
+    if (p.componentType !== 'series' || !Array.isArray(p.value)) return;
+    showMoodMessages(monthAt(p.value[0]), p.seriesIndex < 2 ? 1 : 0, p.seriesIndex % 2 ? 'neg' : 'pos');
+  });
+  chart.getZr().on('click', (e) => {
+    if (e.target) return; // on a bar or label
+    const pt = [e.offsetX, e.offsetY];
+    if (!chart.containPixel('grid', pt)) return;
+    showMoodMessages(monthAt(chart.convertFromPixel({ gridIndex: 0 }, pt)[0]), null, 'any');
+  });
+}
+
+/** Why a message scored as it did, and what it did to its month's bar. */
+function moodWhyHtml(m) {
+  const e = moodLib().explainMood(m.b);
+  const kind = moodKind(m.v);
+  const n = (S.moodScored && S.moodScored.get(`${m.mo}|${m.o}`)) || 1;
+  const month = monthName(monthToTs(m.mo));
+  const whose = m.o ? 'you sent' : 'you received';
+  const word = { pos: 'positive', neg: 'negative', neu: 'neutral' }[kind];
+  const effect = kind === 'neu'
+    ? `Neutral, so it's in neither bar: one of the ${fmtNum(n)} messages ${whose} in ${month} with a mood score, it makes both bars a little shorter.`
+    : `One of the ${fmtNum(n)} messages ${whose} in ${month} with a mood score: worth about ${(100 / n).toFixed(1)} points of the ${word} bar.`;
+  const fmtV = (v) => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(1);
+  const words = e ? [...e.words].sort((a, b) => Math.abs(b.valence) - Math.abs(a.valence)) : [];
+  const chips = words.map((w) => `<span class="mw ${w.valence > 0 ? 'pos' : 'neg'}">${escapeHtml(w.word)} <b>${fmtV(w.valence)}</b>${w.lexicon !== w.valence ? ` <span class="was">was ${fmtV(w.lexicon)}</span>` : ''}</span>`);
+  if (e && e.emphasis) chips.push(`<span class="mw ${e.emphasis > 0 ? 'pos' : 'neg'}">! ? emphasis <b>${fmtV(e.emphasis)}</b></span>`);
+  return `<div class="mood-why">
+    <div><b>${fmtScore(m.v)} ${word}.</b> ${escapeHtml(effect)}</div>
+    ${chips.length ? `<div class="mood-words">${chips.join('')}</div>` : '<div class="mood-note">No words from VADER’s dictionary, so it scored 0.</div>'}
+    <div class="mood-note">Each word's value (after “not”, “very”, ALL CAPS and “but”) adds up and is squeezed into −1…+1. +0.05 or more counts as positive, −0.05 or less as negative.</div>
+  </div>`;
+}
+
+function initMoodDetails() {
+  $('#moodChk').onchange = (e) => {
+    S.showMood = e.target.checked;
+    renderBrowser(inRange(baseMessages()));
+  };
+  $('#browserFilter').onclick = (e) => {
+    if (!e.target.closest('[data-clear-mood]')) return;
+    S.browserMood = null;
+    renderBrowser(inRange(baseMessages()));
+  };
+  $('#messages').addEventListener('click', (e) => {
+    const pill = e.target.closest('.mood-pill');
+    if (!pill) return;
+    const bubble = pill.closest('.bubble');
+    const open = bubble.querySelector('.mood-why');
+    if (open) { open.remove(); return; }
+    bubble.insertAdjacentHTML('beforeend', moodWhyHtml(S.browserShown[+pill.dataset.i]));
+  });
 }
 
 // ------------------------------------------------------------------ highlights, profiles, on this day
@@ -1388,14 +1484,25 @@ function renderPhrase(ui = S.ui) {
 
 function renderBrowser(msgs) {
   const q = S.browserQuery.trim().toLowerCase();
-  const list = q ? msgs.filter((m) => m.b && m.b.toLowerCase().includes(q)) : msgs;
+  const mood = S.browserMood;
+  let list = q ? msgs.filter((m) => m.b && m.b.toLowerCase().includes(q)) : msgs;
+  if (mood) list = list.filter((m) => moodMatches(m, mood));
   const start = Math.max(0, list.length - S.browserLimit);
   const shown = list.slice(start);
   const box = $('#messages');
   resetMessageMedia(box);
   box.innerHTML = '';
-  $('#browserCount').textContent = `${fmtNum(list.length)} message${list.length === 1 ? '' : 's'}${q ? ' matching' : ''} · showing latest ${fmtNum(shown.length)}`;
+  $('#browserCount').textContent = `${fmtNum(list.length)} message${list.length === 1 ? '' : 's'}${q || mood ? ' matching' : ''} · showing latest ${fmtNum(shown.length)}`;
   $('#moreBtn').hidden = start === 0;
+  const chip = $('#browserFilter');
+  chip.hidden = !mood;
+  if (mood) chip.innerHTML = `<span>${escapeHtml(moodFilterLabel(mood))}</span><button class="btn small ghost" type="button" data-clear-mood aria-label="Show all messages">✕</button>`;
+  // Messages with a mood score per month and side: what one message is worth in the chart.
+  if (S.showMood) {
+    S.moodScored = new Map();
+    for (const m of msgs) if (m.v != null) S.moodScored.set(`${m.mo}|${m.o}`, (S.moodScored.get(`${m.mo}|${m.o}`) || 0) + 1);
+  }
+  S.browserShown = shown;
 
   const frag = document.createDocumentFragment();
   const showWho = S.filter.contact === 'all' || S.filter.contact.startsWith('g:');
@@ -1445,7 +1552,16 @@ function renderBrowser(msgs) {
     }
     const time = document.createElement('div');
     time.className = 'time';
-    time.textContent = new Date(m.t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    if (S.showMood && m.v != null) {
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = `mood-pill ${moodKind(m.v)}`;
+      pill.dataset.i = shown.indexOf(m);
+      pill.textContent = fmtScore(m.v);
+      pill.title = `Mood score ${fmtScore(m.v)} (${moodKind(m.v) === 'neu' ? 'neutral' : moodKind(m.v) === 'pos' ? 'positive' : 'negative'}). Click to see why.`;
+      time.appendChild(pill);
+    }
+    time.append(new Date(m.t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }));
     bubble.appendChild(time);
     row.appendChild(bubble);
     frag.appendChild(row);
@@ -1560,6 +1676,7 @@ function init() {
   };
   $('#wrapSave').onclick = saveWrapped;
   initGlance();
+  initMoodDetails();
   initViewer();
   initGallery();
   observeLazySections();

@@ -12,7 +12,9 @@
  * Modified for Yapalytics: src/vaderSentiment.js and src/vader_lexicon.js are
  * wrapped in one self-contained function (ES module exports and the require()
  * removed) so the parser Web Workers can include it in their serialized source.
- * The algorithm and the lexicon are unchanged.
+ * polarity_scores' per-word step is split out as word_sentiments, and explain()
+ * returns those per-word values so the page can show why a message scored as it
+ * did. The algorithm and the lexicon are unchanged.
  */
 function vaderLib() {
   'use strict';
@@ -7870,6 +7872,16 @@ function vaderLib() {
         valence
       */
 
+      const { sentiments } = SentimentIntensityAnalyzer.word_sentiments(text);
+      return SentimentIntensityAnalyzer.score_valence(sentiments, text);
+    }
+
+    static word_sentiments(text) {
+      /**
+        The words (and emoticons) of the text and the valence of each, after
+        boosters, negation, ALL CAPS and "but" (one value per word, in order)
+      */
+
       const sentiText = new SentiText(text);
       let sentiments = [];
       const words_and_emoticons = sentiText.words_and_emoticons;
@@ -7896,8 +7908,7 @@ function vaderLib() {
       }
 
       sentiments = SentimentIntensityAnalyzer.but_check(words_and_emoticons, sentiments);
-      const valence_dict = SentimentIntensityAnalyzer.score_valence(sentiments, text);
-      return valence_dict;
+      return { words: words_and_emoticons, sentiments };
     }
 
     static sentiment_valence(valence, sentiText, item, index, sentiments) {
@@ -8192,5 +8203,20 @@ function vaderLib() {
     }
   }
 
-  return { polarityScores: (text) => SentimentIntensityAnalyzer.polarity_scores(text) };
+  /**
+   * Why a text scores as it does: the compound score, each word's valence (after
+   * modifiers) next to its lexicon value, and the push from ! and ? emphasis.
+   */
+  function explain(text) {
+    const { words, sentiments } = SentimentIntensityAnalyzer.word_sentiments(text);
+    const sum = sentiments.reduce((a, b) => a + b, 0);
+    const push = SentimentIntensityAnalyzer.punctuation_emphasis(sum, text);
+    return {
+      compound: SentimentIntensityAnalyzer.score_valence(sentiments, text).compound,
+      words: words.map((word, i) => ({ word, valence: sentiments[i], lexicon: LEXICON.hasOwnProperty(word.toLowerCase()) ? LEXICON[word.toLowerCase()] : 0 })),
+      emphasis: sum > 0 ? push : sum < 0 ? -push : 0,
+    };
+  }
+
+  return { polarityScores: (text) => SentimentIntensityAnalyzer.polarity_scores(text), explain };
 }
