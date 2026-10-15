@@ -1,0 +1,17 @@
+{
+  "name": "yapalytics",
+  "private": true,
+  "description": "Test tooling for Yapalytics. The site itself is plain static files with no build step.",
+  "type": "module",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "node --test --test-reporter=spec \"tests/unit/*.test.mjs\"",
+    "test:e2e": "playwright test",
+    "serve": "node tests/helpers/serve.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "echarts": "5.6.0",
+    "heic-to": "1.6.5"
+  }
+}

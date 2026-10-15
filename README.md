@@ -23,3 +23,20 @@ HEIC photos are converted in browsers that can't show them by [heic-to](https://
 Navigate to https://yapalytics.online and click "Try Demo Data".
 
 <img width="1314" height="1180" alt="Screenshot 2026-10-13 at 10 48 47 AM" src="https://github.com/user-attachments/assets/35c3dd66-bdbe-44b8-85af-024b50aa1150" />
+
+## Development
+The site is plain HTML, CSS and JavaScript with no build step: serve the folder (`npm run serve`, then open http://127.0.0.1:4173) and edit.
+
+Tests need Node 22 or newer:
+
+```sh
+npm install
+npx playwright install chromium   # once, for the browser tests
+npm test                          # unit tests, then browser tests
+npm run test:unit                 # just the logic (fast, no browser)
+npm run test:e2e                  # just the browser tests
+```
+
+- `tests/unit/` load the app's scripts into Node and check the parsing and statistics.
+- `tests/e2e/` drive the real page in Chromium with Playwright, using the demo data and small exports built in `tests/helpers/`. echarts and heic-to are served from `node_modules` at the same pinned versions the site loads from the CDN, so the tests don't need the network.
+- GitHub Actions runs both on every push to `main` and on pull requests (`.github/workflows/test.yml`); when browser tests fail, the Playwright report is attached to the run.
